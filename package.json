@@ -1,0 +1,28 @@
+{
+  "name": "anti-multi",
+  "version": "1.0.0",
+  "description": "Multi-instance, multi-account launcher and stealth fingerprint/proxy gateway for Google Antigravity with Web UI",
+  "type": "module",
+  "bin": {
+    "anti-multi": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "start": "tsc -p tsconfig.build.json && node dist/cli.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit --pretty false",
+    "test": "vitest run",
+    "verify": "pnpm lint && pnpm typecheck && pnpm build && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "tsx": "^4.19.3",
+    "typescript": "5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT"
+}
