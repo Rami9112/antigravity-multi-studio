@@ -10,7 +10,6 @@ import type {
   SubscriptionTier,
 } from '../types.js';
 import {
-  buildClientMetadataHeader,
   buildHubUserAgent,
 } from '../utils/fingerprint.js';
 
@@ -85,7 +84,6 @@ export async function fetchAccountQuota(
     'Content-Type': 'application/json',
     Accept: 'application/json',
     'User-Agent': buildHubUserAgent(fingerprint),
-    'Client-Metadata': buildClientMetadataHeader(fingerprint),
   };
 
   let projectId = account.projectId;
@@ -101,9 +99,6 @@ export async function fetchAccountQuota(
         body: JSON.stringify({
           metadata: {
             ideType: 'ANTIGRAVITY',
-            installationId: fingerprint.installationId,
-            ideVersion: fingerprint.hubVersion,
-            pluginVersion: fingerprint.hubVersion,
           },
         }),
         proxy,

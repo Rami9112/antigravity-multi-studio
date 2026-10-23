@@ -23,6 +23,24 @@ seen_nuxs: {
   uids: 48
 }
 agent_onboarding_completed: AGENT_ONBOARDING_STATE_COMPLETED
+migrate_convos_into_projects: MIGRATION_STATUS_COMPLETED
+migrate_retroactive_projects: RETROACTIVE_MIGRATION_STATUS_COMPLETED_UNNECESSARY
+migrations: {
+  key: 3
+  value: MIGRATION_STATUS_COMPLETED
+}
+migrations: {
+  key: 4
+  value: MIGRATION_STATUS_COMPLETED
+}
+migrations: {
+  key: 5
+  value: MIGRATION_STATUS_COMPLETED
+}
+migrations: {
+  key: 8
+  value: MIGRATION_STATUS_COMPLETED
+}
 `;
 
 export function seedProfileEnvironment(
@@ -35,11 +53,12 @@ export function seedProfileEnvironment(
   const agyHubDir = path.join(geminiDir, 'antigravity');
   const agyIdeDir = path.join(geminiDir, 'antigravity-ide');
   const geminiConfigDir = path.join(geminiDir, 'config');
+  const geminiProjectsDir = path.join(geminiConfigDir, 'projects');
 
   fs.mkdirSync(globalStorageDir, { recursive: true });
   fs.mkdirSync(agyHubDir, { recursive: true });
   fs.mkdirSync(agyIdeDir, { recursive: true });
-  fs.mkdirSync(geminiConfigDir, { recursive: true });
+  fs.mkdirSync(geminiProjectsDir, { recursive: true });
 
   // 1. Write <userDataDir>/.updaterId
   fs.writeFileSync(
@@ -63,6 +82,12 @@ export function seedProfileEnvironment(
   }
   appStorageObj.hasCompletedOnboarding = true;
   appStorageObj.hasSeenIdeInstallWizard = true;
+  appStorageObj['ide-install-wizard-shown'] = 'true';
+  appStorageObj['didAskForNotificationPermission'] = 'true';
+  appStorageObj['jetski.onboarding.lastLoginIsGcpTos'] = 'false';
+  if (profile.account?.email) {
+    appStorageObj['jetski.onboarding.lastLoginUsername'] = profile.account.email;
+  }
   if (!appStorageObj.windowState) {
     appStorageObj.windowState = {
       width: 1400,
@@ -122,10 +147,29 @@ export function seedProfileEnvironment(
     'utf8',
   );
 
-  // 6. Seed antigravity_state.pbtxt so onboarding wizard is skipped
+  // 6. Seed antigravity_state.pbtxt with installation_uuid so onboarding is skipped and UUID is isolated
   const statePbtxtPath = path.join(agyHubDir, 'antigravity_state.pbtxt');
   if (!fs.existsSync(statePbtxtPath)) {
-    fs.writeFileSync(statePbtxtPath, DEFAULT_ANTIGRAVITY_STATE_PBTXT, 'utf8');
+    fs.writeFileSync(
+      statePbtxtPath,
+      `${DEFAULT_ANTIGRAVITY_STATE_PBTXT}installation_uuid: "${profile.fingerprint.installationId}"\n`,
+      'utf8',
+    );
+  } else {
+    try {
+      let existingPbtxt = fs.readFileSync(statePbtxtPath, 'utf8');
+      if (/installation_uuid:\s*"[^"]*"/.test(existingPbtxt)) {
+        existingPbtxt = existingPbtxt.replace(
+          /installation_uuid:\s*"[^"]*"/,
+          `installation_uuid: "${profile.fingerprint.installationId}"`,
+        );
+      } else {
+        existingPbtxt = `${existingPbtxt.trimEnd()}\ninstallation_uuid: "${profile.fingerprint.installationId}"\n`;
+      }
+      fs.writeFileSync(statePbtxtPath, existingPbtxt, 'utf8');
+    } catch {
+      // non-fatal
+    }
   }
 
   // 7. Write <profileHomeDir>/.gemini/jetski-standalone-oauth-token for language_server.exe
@@ -138,7 +182,56 @@ export function seedProfileEnvironment(
     });
   }
 
-  // 8. Copy host .gitconfig if present so Git inside the isolated agent works smoothly
+  // 8. Seed .gemini/config/.migrated, projects/outside-of-project.json, and config.json
+  const migratedFlagPath = path.join(geminiConfigDir, '.migrated');
+  if (!fs.existsSync(migratedFlagPath)) {
+    fs.writeFileSync(migratedFlagPath, '', 'utf8');
+  }
+  const outsideProjectPath = path.join(geminiProjectsDir, 'outside-of-project.json');
+  if (!fs.existsSync(outsideProjectPath)) {
+    fs.writeFileSync(
+      outsideProjectPath,
+      JSON.stringify(
+        {
+          id: 'outside-of-project',
+          name: 'Outside of Project',
+          settings: {
+            fileAccessPolicy: 'AGENT_SETTING_POLICY_ALLOW',
+            sandboxMode: true,
+            autoExecutionPolicy: 'CASCADE_COMMANDS_AUTO_EXECUTION_EAGER',
+            artifactReviewMode: 'ARTIFACT_REVIEW_MODE_TURBO',
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+  }
+  const geminiConfigJsonPath = path.join(geminiConfigDir, 'config.json');
+  if (!fs.existsSync(geminiConfigJsonPath)) {
+    fs.writeFileSync(
+      geminiConfigJsonPath,
+      JSON.stringify(
+        {
+          userSettings: {
+            artifactReviewMode: 'ARTIFACT_REVIEW_MODE_TURBO',
+            autoExecutionPolicy: 'CASCADE_COMMANDS_AUTO_EXECUTION_EAGER',
+            enableTerminalSandbox: false,
+            nonWorkspaceFileAccessPolicy: 'AGENT_SETTING_POLICY_ALLOW',
+            permissionPreset: 'AGENT_PERMISSION_PRESET_TURBO',
+            remoteControlHostname: profile.fingerprint.hostname.toLowerCase(),
+            useAiCredits: true,
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+  }
+
+  // 9. Copy host .gitconfig if present so Git inside the isolated agent works smoothly
   const hostGitconfig = path.join(os.homedir(), '.gitconfig');
   const profileGitconfig = path.join(profileHomeDir, '.gitconfig');
   if (fs.existsSync(hostGitconfig) && !fs.existsSync(profileGitconfig)) {

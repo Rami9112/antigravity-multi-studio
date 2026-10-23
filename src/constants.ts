@@ -25,7 +25,7 @@ export const CLOUD_CODE_FALLBACK_ORIGINS = [
   'https://cloudcode-pa.googleapis.com',
 ];
 
-export const OFFICIAL_HUB_VERSION = '2.23.1';
+export const OFFICIAL_HUB_VERSION = '2.25.0';
 export const OFFICIAL_HUB_CL = '998881661';
 export const OFFICIAL_IDE_VERSION = '4.3.0';
 export const OFFICIAL_ELECTRON_VERSION = '39.2.3';

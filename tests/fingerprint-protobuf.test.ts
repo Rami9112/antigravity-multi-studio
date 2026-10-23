@@ -45,7 +45,7 @@ describe('fingerprint utilities', () => {
     );
     expect(buildIdeUserAgent(fp)).toContain('Antigravity/4.3.0 (Windows NT 10.0; ARM64)');
     expect(buildClientMetadataHeader(fp)).toContain(
-      'platform=WINDOWS_ARM64,pluginType=CLOUD_CODE,installationId=11111111-2222-4333-8444-555555555555',
+      'platform=WINDOWS_ARM64,pluginType=CLOUD_CODE',
     );
   });
 

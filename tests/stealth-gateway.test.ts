@@ -160,7 +160,7 @@ describe('ProfileStealthGateway & IP Checker', () => {
     expect(reqA).toBeDefined();
     expect(reqA?.headers['user-agent']).toContain('os_type=windows');
     expect(reqA?.headers['client-metadata']).toContain(
-      'installationId=11111111-aaaa-4111-8111-111111111111',
+      'platform=WINDOWS_ARM64,pluginType=CLOUD_CODE',
     );
     expect((reqA?.body.metadata as Record<string, unknown>).installationId).toBe(
       '11111111-aaaa-4111-8111-111111111111',
@@ -170,7 +170,7 @@ describe('ProfileStealthGateway & IP Checker', () => {
     expect(reqB).toBeDefined();
     expect(reqB?.headers['user-agent']).toContain('os_type=darwin');
     expect(reqB?.headers['client-metadata']).toContain(
-      'installationId=22222222-bbbb-4222-8222-222222222222',
+      'platform=DARWIN_ARM64,pluginType=CLOUD_CODE',
     );
     expect((reqB?.body.metadata as Record<string, unknown>).installationId).toBe(
       '22222222-bbbb-4222-8222-222222222222',

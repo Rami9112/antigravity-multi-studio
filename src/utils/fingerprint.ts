@@ -98,13 +98,14 @@ export function buildClientMetadataHeader(fp: DeviceFingerprint): string {
     },
   };
   const platform = platformMap[fp.osType]?.[fp.arch] ?? 'WINDOWS_AMD64';
-  return `ideType=ANTIGRAVITY,ideVersion=${fp.hubVersion},pluginVersion=${fp.hubVersion},platform=${platform},pluginType=CLOUD_CODE,installationId=${fp.installationId}`;
+  return `ideType=ANTIGRAVITY,ideVersion=${fp.hubVersion},pluginVersion=${fp.hubVersion},platform=${platform},pluginType=CLOUD_CODE`;
 }
 
 /**
  * Rewrites outbound JSON request payloads sent to Cloud Code (`v1internal:*`)
  * so that `metadata` fields (`installationId`, `ideVersion`, `pluginVersion`, `duetProject`, etc.)
  * consistently reflect the profile's isolated device fingerprint rather than the host machine.
+ * Only modifies fields that already exist in `metadata` to avoid Protobuf Unknown Field errors.
  */
 export function rewriteCloudCodePayloadMetadata(
   payload: unknown,
@@ -124,7 +125,9 @@ export function rewriteCloudCodePayloadMetadata(
   if (clone.metadata && typeof clone.metadata === 'object' && !Array.isArray(clone.metadata)) {
     const meta = { ...(clone.metadata as Record<string, unknown>) };
     meta.ideType = meta.ideType || 'ANTIGRAVITY';
-    meta.installationId = fp.installationId;
+    if ('installationId' in meta) {
+      meta.installationId = fp.installationId;
+    }
     if ('ideVersion' in meta) {
       meta.ideVersion = fp.hubVersion;
     }
