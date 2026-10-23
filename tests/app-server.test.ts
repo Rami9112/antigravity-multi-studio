@@ -6,6 +6,7 @@ import { ProfileStore } from '../src/core/profile-store.js';
 import { requestViaProxy } from '../src/gateway/proxy-agent.js';
 import { InstanceManager } from '../src/launcher/instance-manager.js';
 import { AppServer } from '../src/server/app-server.js';
+import { renderDashboardHtml } from '../src/ui/dashboard.js';
 
 describe('AppServer REST API routes', () => {
   const tempDirs: string[] = [];
@@ -32,9 +33,18 @@ describe('AppServer REST API routes', () => {
       store,
       instanceManager,
       port: 0,
+      renderDashboardHtml,
     });
     const baseUrl = await server.start();
     servers.push(server);
+
+    // 0. Verify Web UI dashboard HTML is served
+    const uiRes = await requestViaProxy({
+      url: `${baseUrl}/`,
+      method: 'GET',
+    });
+    expect(uiRes.statusCode).toBe(200);
+    expect(uiRes.text()).toContain('Anti-Multi Studio');
 
     // 1. Create profile with proxyString
     const createRes = await requestViaProxy({
