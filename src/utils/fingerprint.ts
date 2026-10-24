@@ -82,7 +82,7 @@ export function buildIdeUserAgent(fp: DeviceFingerprint): string {
   return `Antigravity/${fp.ideVersion} (${platformToken}) Chrome/${OFFICIAL_CHROME_VERSION} Electron/${OFFICIAL_ELECTRON_VERSION}`;
 }
 
-export function buildClientMetadataHeader(fp: DeviceFingerprint): string {
+export function getCloudCodePlatformEnum(fp: DeviceFingerprint): string {
   const platformMap: Record<SpoofedOsType, Record<SpoofedArchType, string>> = {
     windows: {
       arm64: 'WINDOWS_ARM64',
@@ -97,13 +97,17 @@ export function buildClientMetadataHeader(fp: DeviceFingerprint): string {
       amd64: 'LINUX_AMD64',
     },
   };
-  const platform = platformMap[fp.osType]?.[fp.arch] ?? 'WINDOWS_AMD64';
+  return platformMap[fp.osType]?.[fp.arch] ?? 'WINDOWS_AMD64';
+}
+
+export function buildClientMetadataHeader(fp: DeviceFingerprint): string {
+  const platform = getCloudCodePlatformEnum(fp);
   return `ideType=ANTIGRAVITY,ideVersion=${fp.hubVersion},pluginVersion=${fp.hubVersion},platform=${platform},pluginType=CLOUD_CODE`;
 }
 
 /**
  * Rewrites outbound JSON request payloads sent to Cloud Code (`v1internal:*`)
- * so that `metadata` fields (`installationId`, `ideVersion`, `pluginVersion`, `duetProject`, etc.)
+ * so that `metadata` fields (`installationId`, `ideVersion`, `pluginVersion`, `platform`, `duetProject`, etc.)
  * consistently reflect the profile's isolated device fingerprint rather than the host machine.
  * Only modifies fields that already exist in `metadata` to avoid Protobuf Unknown Field errors.
  */
@@ -121,10 +125,21 @@ export function rewriteCloudCodePayloadMetadata(
   if (projectId && typeof clone.project === 'string' && !clone.project.trim()) {
     clone.project = projectId;
   }
+  if ('installationId' in clone && typeof clone.installationId === 'string') {
+    clone.installationId = fp.installationId;
+  }
+  if ('installation_id' in clone && typeof clone.installation_id === 'string') {
+    clone.installation_id = fp.installationId;
+  }
 
   if (clone.metadata && typeof clone.metadata === 'object' && !Array.isArray(clone.metadata)) {
     const meta = { ...(clone.metadata as Record<string, unknown>) };
-    meta.ideType = meta.ideType || 'ANTIGRAVITY';
+    if ('ideType' in meta || Object.keys(meta).length === 0) {
+      meta.ideType = meta.ideType || 'ANTIGRAVITY';
+    }
+    if ('platform' in meta) {
+      meta.platform = getCloudCodePlatformEnum(fp);
+    }
     if ('installationId' in meta) {
       meta.installationId = fp.installationId;
     }
@@ -134,7 +149,7 @@ export function rewriteCloudCodePayloadMetadata(
     if ('pluginVersion' in meta) {
       meta.pluginVersion = fp.hubVersion;
     }
-    if (projectId && !meta.duetProject) {
+    if (projectId && ('duetProject' in meta || 'ideType' in meta) && !meta.duetProject) {
       meta.duetProject = projectId;
     }
     clone.metadata = meta;

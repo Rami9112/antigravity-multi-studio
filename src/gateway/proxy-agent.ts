@@ -51,6 +51,10 @@ export function createSocks5Connection(
     }, timeoutMs);
 
     socket.once('error', fail);
+    const onPrematureClose = () => {
+      fail(new Error('SOCKS5 proxy closed connection prematurely during handshake'));
+    };
+    socket.once('close', onPrematureClose);
 
     const readBytes = (count: number): Promise<Buffer> =>
       new Promise((resRead, rejRead) => {
@@ -142,10 +146,12 @@ export function createSocks5Connection(
 
         clearTimeout(timer);
         socket.removeListener('error', fail);
+        socket.removeListener('close', onPrematureClose);
         settled = true;
         resolve(socket);
       } catch (err) {
         clearTimeout(timer);
+        socket.removeListener('close', onPrematureClose);
         fail(err instanceof Error ? err : new Error(String(err)));
       }
     });
@@ -163,6 +169,7 @@ export function createHttpConnectTunnel(
   timeoutMs = 15000,
 ): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const headers: Record<string, string> = {
       Host: `${targetHost}:${targetPort}`,
       'Proxy-Connection': 'Keep-Alive',
@@ -186,6 +193,7 @@ export function createHttpConnectTunnel(
     });
 
     req.once('connect', (res, socket, head) => {
+      settled = true;
       if (res.statusCode !== 200) {
         socket.destroy();
         reject(new Error(`HTTP proxy CONNECT failed with status ${res.statusCode}`));
@@ -202,7 +210,17 @@ export function createHttpConnectTunnel(
     });
 
     req.once('error', (err) => {
-      reject(err);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+
+    req.once('close', () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error('HTTP proxy closed connection before CONNECT tunnel was established'));
+      }
     });
 
     req.end();
@@ -278,9 +296,17 @@ export async function requestViaProxy(options: OutboundRequestOptions): Promise<
           ? Buffer.from(options.body, 'utf8')
           : options.body;
 
+    const methodUpper = (options.method ?? 'GET').toUpperCase();
     const headers: Record<string, string> = { ...(options.headers ?? {}) };
-    if (bodyBuf && !headers['content-length'] && !headers['Content-Length']) {
+    if (bodyBuf !== undefined) {
       headers['Content-Length'] = String(bodyBuf.length);
+      delete headers['content-length'];
+    } else if (
+      (methodUpper === 'POST' || methodUpper === 'PUT' || methodUpper === 'PATCH') &&
+      !headers['content-length'] &&
+      !headers['Content-Length']
+    ) {
+      headers['Content-Length'] = '0';
     }
 
     const req = reqFn(
@@ -289,7 +315,7 @@ export async function requestViaProxy(options: OutboundRequestOptions): Promise<
         hostname: parsedUrl.hostname,
         port: targetPort,
         path: `${parsedUrl.pathname}${parsedUrl.search}`,
-        method: options.method ?? 'GET',
+        method: methodUpper,
         headers,
         agent: customAgent,
         timeout: timeoutMs,
@@ -316,7 +342,7 @@ export async function requestViaProxy(options: OutboundRequestOptions): Promise<
     });
     req.once('error', reject);
 
-    if (bodyBuf) {
+    if (bodyBuf && bodyBuf.length > 0) {
       req.write(bodyBuf);
     }
     req.end();
@@ -334,7 +360,7 @@ export async function forwardStreamViaProxy(
   const parsedUrl = new URL(options.url);
   const isHttps = parsedUrl.protocol === 'https:';
   const targetPort = Number(parsedUrl.port) || (isHttps ? 443 : 80);
-  const timeoutMs = options.timeoutMs ?? 120000;
+  const timeoutMs = options.timeoutMs ?? 600000;
   const useProxy = Boolean(options.proxy?.enabled && options.proxy.host && options.proxy.port);
 
   let customAgent: http.Agent | undefined;
@@ -354,6 +380,7 @@ export async function forwardStreamViaProxy(
 
   return new Promise((resolve, reject) => {
     const reqFn = isHttps ? https.request : http.request;
+    const methodUpper = (options.method ?? 'POST').toUpperCase();
     const bodyBuf =
       options.body === undefined
         ? undefined
@@ -365,6 +392,9 @@ export async function forwardStreamViaProxy(
     if (bodyBuf !== undefined) {
       headers['content-length'] = String(bodyBuf.length);
       delete headers['Content-Length'];
+    } else if (methodUpper === 'POST' || methodUpper === 'PUT' || methodUpper === 'PATCH') {
+      headers['content-length'] = '0';
+      delete headers['Content-Length'];
     }
 
     const upstreamReq = reqFn(
@@ -373,7 +403,7 @@ export async function forwardStreamViaProxy(
         hostname: parsedUrl.hostname,
         port: targetPort,
         path: `${parsedUrl.pathname}${parsedUrl.search}`,
-        method: options.method ?? 'POST',
+        method: methodUpper,
         headers,
         agent: customAgent,
         timeout: timeoutMs,
@@ -387,10 +417,25 @@ export async function forwardStreamViaProxy(
       },
     );
 
+    const onClientClose = () => {
+      if (!clientRes.writableEnded) {
+        upstreamReq.destroy();
+        resolve();
+      }
+    };
+    clientRes.once('close', onClientClose);
+
     upstreamReq.once('timeout', () => {
       upstreamReq.destroy(new Error(`Upstream stream timed out after ${timeoutMs}ms`));
     });
-    upstreamReq.once('error', reject);
+    upstreamReq.once('error', (err) => {
+      clientRes.removeListener('close', onClientClose);
+      if (clientRes.destroyed) {
+        resolve();
+      } else {
+        reject(err);
+      }
+    });
 
     if (bodyBuf && bodyBuf.length > 0) {
       upstreamReq.write(bodyBuf);

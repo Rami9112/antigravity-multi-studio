@@ -1,4 +1,5 @@
 import http from 'node:http';
+import zlib from 'node:zlib';
 import { CLOUD_CODE_PRIMARY_ORIGIN } from '../constants.js';
 import type { AccountProfile } from '../types.js';
 import {
@@ -18,6 +19,9 @@ const TELEMETRY_PATH_PATTERNS = [
   /^\/log\b/i,
   /:recordTelemetry\b/i,
   /:recordAnalytics\b/i,
+  /:recordTrajectoryAnalytics\b/i,
+  /:recordClientEvent\b/i,
+  /:recordCodeAssistMetrics\b/i,
   /:uploadPerformanceProfile\b/i,
 ];
 
@@ -144,15 +148,19 @@ export class ProfileStealthGateway {
       let outboundBody: Buffer = rawBody;
 
       const contentType = String(req.headers['content-type'] ?? '');
+      const contentEncoding = String(req.headers['content-encoding'] ?? '').toLowerCase();
       if (rawBody.length > 0 && contentType.toLowerCase().includes('application/json')) {
         try {
-          const parsed = JSON.parse(rawBody.toString('utf8'));
+          const isGzip = contentEncoding.includes('gzip');
+          const decodedBuf = isGzip ? zlib.gunzipSync(rawBody) : rawBody;
+          const parsed = JSON.parse(decodedBuf.toString('utf8'));
           const rewritten = rewriteCloudCodePayloadMetadata(
             parsed,
             this.profile.fingerprint,
             this.profile.account?.projectId,
           );
-          outboundBody = Buffer.from(JSON.stringify(rewritten), 'utf8');
+          const serializedBuf = Buffer.from(JSON.stringify(rewritten), 'utf8');
+          outboundBody = isGzip ? zlib.gzipSync(serializedBuf) : serializedBuf;
         } catch {
           outboundBody = rawBody;
         }
@@ -191,9 +199,9 @@ export class ProfileStealthGateway {
           url: targetUrl,
           method: req.method ?? 'POST',
           headers,
-          body: outboundBody.length > 0 ? outboundBody : undefined,
+          body: outboundBody,
           proxy: this.profile.proxy.enabled ? this.profile.proxy : undefined,
-          timeoutMs: 120000,
+          timeoutMs: 600000,
         },
         res,
       );

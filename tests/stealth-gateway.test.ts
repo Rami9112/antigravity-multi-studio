@@ -1,4 +1,6 @@
 import http from 'node:http';
+import net from 'node:net';
+import zlib from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkOutboundIp } from '../src/gateway/ip-checker.js';
 import { requestViaProxy } from '../src/gateway/proxy-agent.js';
@@ -177,16 +179,125 @@ describe('ProfileStealthGateway & IP Checker', () => {
     );
     expect(reqB?.body.project).toBe('proj-beta');
 
-    // Verify telemetry blocking
-    const telemetryRes = await requestViaProxy({
-      url: `${gatewayA.url}/log`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{"events":[]}',
-    });
-    expect(telemetryRes.statusCode).toBe(200);
-    expect(gatewayA.blockedTelemetryRequests).toBe(1);
+    // Verify telemetry blocking across all language_server.exe telemetry endpoints
+    for (const telemetryPath of [
+      '/log',
+      '/v1internal:recordTrajectoryAnalytics',
+      '/v1internal:recordClientEvent',
+      '/v1internal:recordCodeAssistMetrics',
+      '/v1internal:uploadPerformanceProfile',
+    ]) {
+      const telemetryRes = await requestViaProxy({
+        url: `${gatewayA.url}${telemetryPath}`,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{"events":[]}',
+      });
+      expect(telemetryRes.statusCode).toBe(200);
+    }
+    expect(gatewayA.blockedTelemetryRequests).toBe(5);
     expect(receivedByUpstream).toHaveLength(2); // did not hit upstream!
+  });
+
+  it('rewrites gzipped JSON payloads and fails fast on prematurely closed proxy sockets', async () => {
+    let upstreamDecodedBody: Record<string, unknown> = {};
+    const mockUpstream = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const rawBuf = Buffer.concat(chunks);
+        const unzipped =
+          req.headers['content-encoding'] === 'gzip'
+            ? zlib.gunzipSync(rawBuf)
+            : rawBuf;
+        upstreamDecodedBody = JSON.parse(unzipped.toString('utf8')) as Record<
+          string,
+          unknown
+        >;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+
+    await new Promise<void>((resolve) =>
+      mockUpstream.listen(0, '127.0.0.1', () => resolve()),
+    );
+    const upstreamPort = (mockUpstream.address() as { port: number }).port;
+    serversToClose.push({
+      stop: () => new Promise<void>((resolve) => mockUpstream.close(() => resolve())),
+    });
+
+    const profile = makeTestProfile(
+      'prof-gzip',
+      'gzip@example.com',
+      'ya29.gzip_token',
+      '33333333-cccc-4333-8333-333333333333',
+      'proj-gzip',
+      'darwin',
+    );
+    const gateway = new ProfileStealthGateway({
+      profile,
+      upstreamOrigin: `http://127.0.0.1:${upstreamPort}`,
+    });
+    await gateway.start();
+    serversToClose.push(gateway);
+
+    const compressedBody = zlib.gzipSync(
+      Buffer.from(
+        JSON.stringify({
+          installationId: 'leaked-top-level-id',
+          metadata: {
+            ideType: 'ANTIGRAVITY',
+            platform: 'WINDOWS_AMD64',
+            installationId: 'leaked-meta-id',
+          },
+        }),
+        'utf8',
+      ),
+    );
+
+    const res = await requestViaProxy({
+      url: `${gateway.url}/v1internal:streamGenerateContent?alt=sse`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Encoding': 'gzip',
+      },
+      body: compressedBody,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(upstreamDecodedBody.installationId).toBe(
+      '33333333-cccc-4333-8333-333333333333',
+    );
+    const meta = upstreamDecodedBody.metadata as Record<string, unknown>;
+    expect(meta.installationId).toBe('33333333-cccc-4333-8333-333333333333');
+    expect(meta.platform).toBe('DARWIN_ARM64');
+    expect(meta.duetProject).toBe('proj-gzip');
+
+    // Verify premature proxy socket close fails immediately instead of hanging
+    const deadProxy = net.createServer((socket) => {
+      socket.destroy();
+    });
+    await new Promise<void>((resolve) =>
+      deadProxy.listen(0, '127.0.0.1', () => resolve()),
+    );
+    const deadProxyPort = (deadProxy.address() as { port: number }).port;
+    serversToClose.push({
+      stop: () => new Promise<void>((resolve) => deadProxy.close(() => resolve())),
+    });
+
+    await expect(
+      requestViaProxy({
+        url: 'https://example.com/test',
+        proxy: {
+          enabled: true,
+          protocol: 'socks5',
+          host: '127.0.0.1',
+          port: deadProxyPort,
+        },
+        timeoutMs: 5000,
+      }),
+    ).rejects.toThrow(/SOCKS5|closed|ECONNRESET/i);
   });
 
   it('checks outbound IP against configured endpoints', async () => {
