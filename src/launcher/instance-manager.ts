@@ -1,7 +1,12 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
-import { ensureFreshAccountToken } from '../core/oauth-service.js';
+import {
+  ensureFreshAccountToken,
+  fetchGoogleUserInfo,
+  isPlaceholderEmail,
+} from '../core/oauth-service.js';
 import type { ProfileStore } from '../core/profile-store.js';
+import { fetchAccountQuota } from '../core/quota-service.js';
 import { ProfileStealthGateway } from '../gateway/stealth-gateway.js';
 import type { AccountProfile, RunningInstanceInfo } from '../types.js';
 import {
@@ -50,6 +55,7 @@ export class InstanceManager {
   }
 
   public getRunningInfo(profileId: string): RunningInstanceInfo | undefined {
+    if (!this.isRunning(profileId)) return undefined;
     const inst = this.instances.get(profileId);
     if (!inst) return undefined;
     const profile = this.store.getProfile(profileId);
@@ -60,12 +66,45 @@ export class InstanceManager {
   public listRunningInstances(): RunningInstanceInfo[] {
     const list: RunningInstanceInfo[] = [];
     for (const [profileId, inst] of this.instances.entries()) {
+      if (!this.isRunning(profileId)) {
+        continue;
+      }
       const profile = this.store.getProfile(profileId);
       if (profile) {
         list.push(this.toRunningInfo(inst, profile));
       }
     }
     return list;
+  }
+
+  /**
+   * Synchronizes updated profile state (token, fingerprint, proxy) to disk and to
+   * the live-running `ProfileStealthGateway` if an instance is active.
+   */
+  public notifyProfileUpdated(profileId: string): void {
+    const profile = this.store.getProfile(profileId);
+    if (!profile) return;
+
+    const inst = this.instances.get(profileId);
+    if (inst) {
+      inst.gateway.updateProfile(profile);
+      try {
+        seedProfileEnvironment(profile, inst.userDataDir, inst.profileHomeDir);
+      } catch {
+        // non-fatal
+      }
+      return;
+    }
+
+    const userDataDir = this.store.getProfileUserDataDir(profileId);
+    const profileHomeDir = this.store.getProfileHomeDir(profileId);
+    if (fs.existsSync(userDataDir) || fs.existsSync(profileHomeDir)) {
+      try {
+        seedProfileEnvironment(profile, userDataDir, profileHomeDir);
+      } catch {
+        // non-fatal
+      }
+    }
   }
 
   private toRunningInfo(
@@ -205,6 +244,7 @@ export class InstanceManager {
       profile,
       upstreamOrigin: options.upstreamOrigin,
       getValidAccessToken: async (id) => {
+        this.syncProfileTokenFromDisk(id, userDataDir, profileHomeDir, gateway);
         const latest = this.store.getProfile(id);
         if (!latest?.account) return undefined;
         try {
@@ -215,6 +255,11 @@ export class InstanceManager {
           if (didRefresh) {
             const updated = this.store.updateProfile(id, { account: refreshed });
             gateway.updateProfile(updated);
+            try {
+              seedProfileEnvironment(updated, userDataDir, profileHomeDir);
+            } catch {
+              // non-fatal
+            }
           }
           return refreshed.accessToken;
         } catch {
@@ -300,6 +345,59 @@ export class InstanceManager {
         account: syncedAccount,
       });
       gateway.updateProfile(updated);
+
+      if (isPlaceholderEmail(syncedAccount.email) && syncedAccount.accessToken) {
+        void this.enrichSyncedAccount(profileId, userDataDir, profileHomeDir, gateway);
+      }
+    }
+  }
+
+  private async enrichSyncedAccount(
+    profileId: string,
+    userDataDir: string,
+    profileHomeDir: string,
+    gateway: ProfileStealthGateway,
+  ): Promise<void> {
+    const profile = this.store.getProfile(profileId);
+    if (!profile?.account?.accessToken) return;
+
+    try {
+      const info = await fetchGoogleUserInfo(profile.account.accessToken, {
+        proxy: profile.proxy,
+      });
+      let nextAccount = {
+        ...profile.account,
+        email: info.email || profile.account.email,
+        name: info.name ?? profile.account.name,
+        picture: info.picture ?? profile.account.picture,
+      };
+
+      let updated = this.store.updateProfile(profileId, { account: nextAccount });
+      try {
+        const quota = await fetchAccountQuota(nextAccount, updated.fingerprint, {
+          proxy: updated.proxy,
+        });
+        nextAccount = {
+          ...nextAccount,
+          projectId: quota.projectId ?? nextAccount.projectId,
+          subscriptionTier: quota.tier,
+        };
+        updated = this.store.updateProfile(profileId, {
+          account: nextAccount,
+          quota,
+        });
+      } catch {
+        // non-fatal
+      }
+
+      gateway.updateProfile(updated);
+      try {
+        seedProfileEnvironment(updated, userDataDir, profileHomeDir);
+      } catch {
+        // non-fatal
+      }
+    } catch {
+      // non-fatal
     }
   }
 
@@ -315,6 +413,17 @@ export class InstanceManager {
       inst.gateway,
     );
     this.instances.delete(profileId);
+
+    const exitPromise =
+      inst.child.exitCode === null && !inst.child.killed
+        ? new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, 1500);
+            inst.child.once('exit', () => {
+              clearTimeout(t);
+              resolve();
+            });
+          })
+        : Promise.resolve();
 
     try {
       if (process.platform === 'win32' && inst.pid) {
@@ -333,7 +442,11 @@ export class InstanceManager {
       }
     }
 
+    await exitPromise;
     await inst.gateway.stop();
+    if (process.platform === 'win32') {
+      await new Promise((r) => setTimeout(r, 150));
+    }
     return true;
   }
 

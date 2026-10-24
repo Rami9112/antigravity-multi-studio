@@ -341,6 +341,8 @@ export class AppServer {
           // non-fatal
         }
 
+        this.instanceManager.notifyProfileUpdated(profile.id);
+
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(
           renderOAuthCallbackHtml(
@@ -415,6 +417,8 @@ export class AppServer {
           // non-fatal
         }
 
+        this.instanceManager.notifyProfileUpdated(profile.id);
+
         sendJson(res, 200, { ok: true, profile });
         return;
       }
@@ -456,8 +460,14 @@ export class AppServer {
       }
 
       if (method === 'POST' && pathname === '/api/import') {
-        const body = await readJsonBody<{ profiles?: Array<Partial<AccountProfile>> }>(req);
-        const list = Array.isArray(body.profiles) ? body.profiles : [];
+        const body = await readJsonBody<
+          { profiles?: Array<Partial<AccountProfile>> } | Array<Partial<AccountProfile>>
+        >(req);
+        const list = Array.isArray(body)
+          ? body
+          : Array.isArray(body.profiles)
+            ? body.profiles
+            : [];
         const imported = this.store.importProfiles(list);
         sendJson(res, 201, { ok: true, count: imported.length, profiles: imported });
         return;
@@ -478,7 +488,7 @@ export class AppServer {
             proxyPatch = body.proxy as Partial<ProxyConfig>;
           }
 
-          const updated = this.store.updateProfile(profileId, {
+          let updated = this.store.updateProfile(profileId, {
             name: typeof body.name === 'string' ? body.name : undefined,
             notes: typeof body.notes === 'string' ? body.notes : undefined,
             color: typeof body.color === 'string' ? body.color : undefined,
@@ -490,6 +500,15 @@ export class AppServer {
                 : undefined,
             proxy: proxyPatch,
           });
+
+          if (typeof body.refreshToken === 'string' && body.refreshToken.trim()) {
+            updated = await this.bindRefreshTokenToProfile(
+              profileId,
+              body.refreshToken.trim(),
+            );
+          }
+
+          this.instanceManager.notifyProfileUpdated(profileId);
           sendJson(res, 200, { ok: true, profile: updated });
           return;
         }
@@ -505,6 +524,7 @@ export class AppServer {
         if (action === 'regenerate-fingerprint' && method === 'POST') {
           const body = await readJsonBody<Partial<DeviceFingerprint>>(req);
           const updated = this.store.regenerateFingerprint(profileId, body);
+          this.instanceManager.notifyProfileUpdated(profileId);
           sendJson(res, 200, { ok: true, profile: updated });
           return;
         }
@@ -569,6 +589,7 @@ export class AppServer {
               subscriptionTier: quota.tier,
             },
           });
+          this.instanceManager.notifyProfileUpdated(profileId);
           sendJson(res, 200, { ok: true, profile, quota });
           return;
         }
@@ -617,7 +638,18 @@ export class AppServer {
       proxy: profile.proxy,
     });
 
-    let updated = this.store.updateProfile(profileId, { account });
+    const autoName =
+      (profile.name === 'Token Account' || profile.name === 'New Profile') &&
+      account.email &&
+      !account.email.endsWith('@google.account') &&
+      !account.email.endsWith('@antigravity.user')
+        ? account.email.split('@')[0]
+        : undefined;
+
+    let updated = this.store.updateProfile(profileId, {
+      account,
+      name: autoName,
+    });
     try {
       const quota = await fetchAccountQuota(account, updated.fingerprint, {
         proxy: updated.proxy,
@@ -633,8 +665,18 @@ export class AppServer {
     } catch {
       // non-fatal
     }
+    this.instanceManager.notifyProfileUpdated(profileId);
     return updated;
   }
+}
+
+function escapeHtmlServer(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function sendJson(res: http.ServerResponse, statusCode: number, data: unknown): void {
@@ -662,6 +704,7 @@ async function readJsonBody<T = Record<string, unknown>>(
 function renderOAuthCallbackHtml(success: boolean, message: string): string {
   const color = success ? '#10b981' : '#ef4444';
   const title = success ? 'OAuth 계정 연결 완료' : 'OAuth 인증 오류';
+  const safeMessage = escapeHtmlServer(message);
   return `<!doctype html>
 <html lang="ko">
 <head>
@@ -713,7 +756,7 @@ function renderOAuthCallbackHtml(success: boolean, message: string): string {
 <body>
   <div class="card">
     <div class="badge">${title}</div>
-    <h1>${message}</h1>
+    <h1>${safeMessage}</h1>
     <p>이 창은 자동으로 닫히며 Anti-Multi 웹 대시보드가 즉시 갱신됩니다.</p>
     <button onclick="window.close()">창 닫기</button>
   </div>

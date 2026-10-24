@@ -103,6 +103,26 @@ describe('ProfileSeeder & InstanceManager multi-instance isolation', () => {
     const synced = syncBackProfileAuthFromDisk(profile, userDataDir, homeDir);
     expect(synced?.accessToken).toBe('ya29.new-login-token');
     expect(synced?.refreshToken).toBe('1//0g-new-login-refresh');
+    // Should not carry over old account's email/projectId when refreshToken changed
+    expect(synced?.email).toBe('authenticated@google.account');
+    expect(synced?.projectId).toBeUndefined();
+
+    // Verify stale disk token does NOT clobber newer in-memory token when refreshToken is same
+    const fresherProfile = store.updateProfile(profile.id, {
+      account: {
+        accessToken: 'ya29.fresher-in-memory',
+        refreshToken: '1//0g-new-login-refresh',
+        expiryTimestamp: 1950000000,
+        tokenType: 'Bearer',
+        email: 'newlogin@example.com',
+      },
+    });
+    const staleSync = syncBackProfileAuthFromDisk(
+      fresherProfile,
+      userDataDir,
+      homeDir,
+    );
+    expect(staleSync).toBeNull();
   });
 
   it('launches multiple concurrent isolated instances with distinct gateways, homes, and proxies', async () => {

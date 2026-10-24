@@ -686,7 +686,8 @@ export function renderDashboardHtml(): string {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function renderAll() {
@@ -915,7 +916,7 @@ export function renderDashboardHtml(): string {
       document.getElementById('pm-hostname').value = p ? p.fingerprint.hostname : '';
       document.getElementById('pm-block-telemetry').value = p ? String(p.fingerprint.blockTelemetry) : 'true';
       document.getElementById('pm-refresh-token').value = '';
-      document.getElementById('pm-token-group').style.display = p ? 'none' : 'block';
+      document.getElementById('pm-token-group').style.display = 'block';
 
       document.getElementById('profile-modal').classList.add('open');
     }
@@ -939,7 +940,14 @@ export function renderDashboardHtml(): string {
         if (id) {
           await apiCall(\`/api/profiles/\${id}\`, {
             method: 'PUT',
-            body: JSON.stringify({ name, notes, workspacePath, proxyString, fingerprint }),
+            body: JSON.stringify({
+              name,
+              notes,
+              workspacePath,
+              proxyString,
+              fingerprint,
+              refreshToken: refreshToken || undefined,
+            }),
           });
           showToast('프로필이 업데이트되었습니다.');
         } else {

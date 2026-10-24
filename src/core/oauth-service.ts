@@ -32,6 +32,17 @@ interface GoogleUserInfoResponse {
   picture?: string;
 }
 
+export function isPlaceholderEmail(email?: string): boolean {
+  if (!email) return true;
+  const trimmed = email.trim().toLowerCase();
+  return (
+    !trimmed ||
+    trimmed === 'unknown@google.account' ||
+    trimmed === 'local@antigravity.user' ||
+    trimmed === 'authenticated@google.account'
+  );
+}
+
 export function buildGoogleOAuthUrl(redirectUri: string, state: string): string {
   const params = new URLSearchParams({
     client_id: OAUTH_CLIENT_ID,
@@ -187,14 +198,14 @@ export async function refreshOAuthToken(
   let name = existing.name;
   let picture = existing.picture;
 
-  if (idToken && !email) {
+  if (idToken && isPlaceholderEmail(email)) {
     const claims = decodeJwtClaims(idToken);
-    if (typeof claims?.email === 'string') email = claims.email;
-    if (typeof claims?.name === 'string') name = claims.name;
-    if (typeof claims?.picture === 'string') picture = claims.picture;
+    if (typeof claims?.email === 'string' && claims.email) email = claims.email;
+    if (typeof claims?.name === 'string' && claims.name) name = claims.name;
+    if (typeof claims?.picture === 'string' && claims.picture) picture = claims.picture;
   }
 
-  if (!email || email === 'unknown@google.account') {
+  if (isPlaceholderEmail(email)) {
     try {
       const info = await fetchGoogleUserInfo(data.access_token, options);
       if (info.email) email = info.email;

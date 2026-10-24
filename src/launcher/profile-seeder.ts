@@ -253,40 +253,30 @@ export function syncBackProfileAuthFromDisk(
   userDataDir: string,
   profileHomeDir: string,
 ): OAuthTokenData | null {
+  interface DiskTokenCandidate {
+    token: Partial<OAuthTokenData>;
+    mtimeMs: number;
+    priority: number;
+  }
+
+  const candidates: DiskTokenCandidate[] = [];
+
   const jetskiTokenPath = path.join(
     profileHomeDir,
     '.gemini',
     'jetski-standalone-oauth-token',
   );
-
   if (fs.existsSync(jetskiTokenPath)) {
     try {
+      const stat = fs.statSync(jetskiTokenPath);
       const raw = fs.readFileSync(jetskiTokenPath, 'utf8');
       const parsed = parseJetskiStoredTokenJson(raw);
       if (parsed && (parsed.accessToken || parsed.refreshToken)) {
-        const changed =
-          !profile.account ||
-          (parsed.refreshToken && parsed.refreshToken !== profile.account.refreshToken) ||
-          (parsed.accessToken && parsed.accessToken !== profile.account.accessToken);
-
-        if (changed) {
-          return {
-            accessToken: parsed.accessToken || profile.account?.accessToken || '',
-            refreshToken: parsed.refreshToken || profile.account?.refreshToken || '',
-            expiryTimestamp:
-              parsed.expiryTimestamp || profile.account?.expiryTimestamp || 0,
-            tokenType: parsed.tokenType || 'Bearer',
-            idToken: parsed.idToken ?? profile.account?.idToken,
-            email:
-              parsed.email ||
-              profile.account?.email ||
-              'authenticated@google.account',
-            name: parsed.name ?? profile.account?.name,
-            picture: parsed.picture ?? profile.account?.picture,
-            projectId: parsed.projectId ?? profile.account?.projectId,
-            subscriptionTier: profile.account?.subscriptionTier,
-          };
-        }
+        candidates.push({
+          token: parsed,
+          mtimeMs: stat.mtimeMs,
+          priority: 2,
+        });
       }
     } catch {
       // ignore
@@ -296,6 +286,7 @@ export function syncBackProfileAuthFromDisk(
   const vscdbPath = path.join(userDataDir, 'User', 'globalStorage', 'state.vscdb');
   if (fs.existsSync(vscdbPath)) {
     try {
+      const stat = fs.statSync(vscdbPath);
       const db = new DatabaseSync(vscdbPath, { open: true, readOnly: true });
       try {
         const row = db
@@ -310,26 +301,11 @@ export function syncBackProfileAuthFromDisk(
               : Buffer.from(row.value).toString('utf8');
           const parsed = decodeUnifiedStateOAuthTokenBase64(b64);
           if (parsed && (parsed.accessToken || parsed.refreshToken)) {
-            const changed =
-              !profile.account ||
-              (parsed.refreshToken &&
-                parsed.refreshToken !== profile.account.refreshToken) ||
-              (parsed.accessToken && parsed.accessToken !== profile.account.accessToken);
-            if (changed) {
-              return {
-                accessToken: parsed.accessToken || profile.account?.accessToken || '',
-                refreshToken: parsed.refreshToken || profile.account?.refreshToken || '',
-                expiryTimestamp:
-                  parsed.expiryTimestamp || profile.account?.expiryTimestamp || 0,
-                tokenType: parsed.tokenType || 'Bearer',
-                idToken: parsed.idToken ?? profile.account?.idToken,
-                email: profile.account?.email || 'authenticated@google.account',
-                name: profile.account?.name,
-                picture: profile.account?.picture,
-                projectId: profile.account?.projectId,
-                subscriptionTier: profile.account?.subscriptionTier,
-              };
-            }
+            candidates.push({
+              token: parsed,
+              mtimeMs: stat.mtimeMs,
+              priority: 1,
+            });
           }
         }
       } finally {
@@ -340,5 +316,52 @@ export function syncBackProfileAuthFromDisk(
     }
   }
 
-  return null;
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  // Pick the most recent disk candidate by expiryTimestamp, then file mtimeMs, then priority
+  candidates.sort((a, b) => {
+    const expA = a.token.expiryTimestamp ?? 0;
+    const expB = b.token.expiryTimestamp ?? 0;
+    if (expA !== expB) return expB - expA;
+    if (Math.abs(a.mtimeMs - b.mtimeMs) > 50) return b.mtimeMs - a.mtimeMs;
+    return b.priority - a.priority;
+  });
+
+  const parsed = candidates[0]!.token;
+  const refreshChanged = Boolean(
+    parsed.refreshToken &&
+      (!profile.account || parsed.refreshToken !== profile.account.refreshToken),
+  );
+  const accessNewer = Boolean(
+    parsed.accessToken &&
+      parsed.accessToken !== profile.account?.accessToken &&
+      (!profile.account?.accessToken ||
+        !profile.account?.expiryTimestamp ||
+        (parsed.expiryTimestamp && parsed.expiryTimestamp > profile.account.expiryTimestamp)),
+  );
+  const changed = !profile.account || refreshChanged || accessNewer;
+
+  if (!changed) {
+    return null;
+  }
+
+  return {
+    accessToken:
+      parsed.accessToken || (refreshChanged ? '' : profile.account?.accessToken || ''),
+    refreshToken: parsed.refreshToken || profile.account?.refreshToken || '',
+    expiryTimestamp:
+      parsed.expiryTimestamp || (refreshChanged ? 0 : profile.account?.expiryTimestamp || 0),
+    tokenType: parsed.tokenType || 'Bearer',
+    idToken: parsed.idToken ?? (refreshChanged ? undefined : profile.account?.idToken),
+    email:
+      parsed.email ||
+      (refreshChanged ? 'authenticated@google.account' : profile.account?.email) ||
+      'authenticated@google.account',
+    name: parsed.name ?? (refreshChanged ? undefined : profile.account?.name),
+    picture: parsed.picture ?? (refreshChanged ? undefined : profile.account?.picture),
+    projectId: parsed.projectId ?? (refreshChanged ? undefined : profile.account?.projectId),
+    subscriptionTier: refreshChanged ? undefined : profile.account?.subscriptionTier,
+  };
 }

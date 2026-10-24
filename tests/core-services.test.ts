@@ -56,6 +56,42 @@ describe('ProfileStore, OAuthService, QuotaService, and LocalImporter', () => {
     expect(storeReloaded.getProfile(p1.id)?.fingerprint.installationId).toBe(
       regenerated.fingerprint.installationId,
     );
+
+    // Verify proxy lastCheckedIp invalidation when proxy host/port changes
+    const withCheckedIp = storeReloaded.updateProfile(p1.id, {
+      proxy: {
+        enabled: true,
+        protocol: 'http',
+        host: '10.0.0.1',
+        port: 8080,
+        lastCheckedIp: '203.0.113.10',
+        lastCheckedCountry: 'US',
+      },
+    });
+    expect(withCheckedIp.proxy.lastCheckedIp).toBe('203.0.113.10');
+
+    const afterProxyChange = storeReloaded.updateProfile(p1.id, {
+      proxy: {
+        enabled: true,
+        protocol: 'socks5',
+        host: '10.0.0.2',
+        port: 1080,
+      },
+    });
+    expect(afterProxyChange.proxy.lastCheckedIp).toBeUndefined();
+    expect(afterProxyChange.proxy.lastCheckedCountry).toBeUndefined();
+
+    // Verify Antigravity-Manager top-level refresh_token import compatibility
+    const imported = storeReloaded.importProfiles([
+      {
+        name: 'Manager Account',
+        email: 'manager@example.com',
+        refresh_token: '1//0g-manager-token',
+      } as Record<string, unknown>,
+    ]);
+    expect(imported).toHaveLength(1);
+    expect(imported[0]?.account?.refreshToken).toBe('1//0g-manager-token');
+    expect(imported[0]?.account?.email).toBe('manager@example.com');
   });
 
   it('exchanges OAuth codes, refreshes tokens, and fetches quota from Cloud Code endpoints', async () => {

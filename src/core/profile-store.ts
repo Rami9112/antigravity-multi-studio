@@ -199,6 +199,31 @@ export class ProfileStore {
     }
 
     const current = this.data.profiles[idx]!;
+    let nextProxy = current.proxy;
+    if (patch.proxy) {
+      const targetChanged =
+        (patch.proxy.enabled !== undefined && patch.proxy.enabled !== current.proxy.enabled) ||
+        (patch.proxy.host !== undefined && patch.proxy.host !== current.proxy.host) ||
+        (patch.proxy.port !== undefined && patch.proxy.port !== current.proxy.port) ||
+        (patch.proxy.protocol !== undefined && patch.proxy.protocol !== current.proxy.protocol);
+
+      nextProxy = {
+        ...current.proxy,
+        ...patch.proxy,
+      };
+      if (targetChanged && patch.proxy.lastCheckedIp === undefined) {
+        delete nextProxy.lastCheckedIp;
+        delete nextProxy.lastCheckedCountry;
+        delete nextProxy.lastCheckedOrg;
+        delete nextProxy.lastCheckedLatencyMs;
+        delete nextProxy.lastCheckedAt;
+      }
+      if (!nextProxy.enabled) {
+        delete nextProxy.username;
+        delete nextProxy.password;
+      }
+    }
+
     const updated: AccountProfile = {
       ...current,
       name: patch.name !== undefined ? patch.name.trim() || current.name : current.name,
@@ -217,7 +242,7 @@ export class ProfileStore {
       fingerprint: patch.fingerprint
         ? { ...current.fingerprint, ...patch.fingerprint }
         : current.fingerprint,
-      proxy: patch.proxy ? { ...current.proxy, ...patch.proxy } : current.proxy,
+      proxy: nextProxy,
       quota: patch.quota ?? current.quota,
       lastLaunchedAt: patch.lastLaunchedAt ?? current.lastLaunchedAt,
       updatedAt: new Date().toISOString(),
@@ -259,7 +284,16 @@ export class ProfileStore {
     if (removeDiskFiles) {
       const rootDir = this.getProfileRootDir(id);
       if (fs.existsSync(rootDir)) {
-        fs.rmSync(rootDir, { recursive: true, force: true });
+        try {
+          fs.rmSync(rootDir, {
+            recursive: true,
+            force: true,
+            maxRetries: 10,
+            retryDelay: 150,
+          });
+        } catch {
+          // Ignore transient Windows NTFS lock if background handles are still closing
+        }
       }
     }
     return true;
@@ -270,23 +304,52 @@ export class ProfileStore {
   }
 
   public importProfiles(
-    incomingProfiles: Array<Partial<AccountProfile>>,
+    incomingProfiles: Array<Partial<AccountProfile> & Record<string, unknown>>,
   ): AccountProfile[] {
     const imported: AccountProfile[] = [];
     for (const item of incomingProfiles) {
       if (!item || typeof item !== 'object') continue;
-      const created = this.createProfile({
+
+      let account = item.account;
+      if (!account) {
+        const rawRefresh =
+          (typeof item.refresh_token === 'string' && item.refresh_token.trim()) ||
+          (typeof item.refreshToken === 'string' && item.refreshToken.trim()) ||
+          '';
+        const rawAccess =
+          (typeof item.access_token === 'string' && item.access_token.trim()) ||
+          (typeof item.accessToken === 'string' && item.accessToken.trim()) ||
+          '';
+        const rawEmail =
+          (typeof item.email === 'string' && item.email.trim()) ||
+          'unknown@google.account';
+        if (rawRefresh || rawAccess) {
+          account = {
+            accessToken: rawAccess,
+            refreshToken: rawRefresh,
+            expiryTimestamp: 0,
+            tokenType: 'Bearer',
+            email: rawEmail,
+          };
+        }
+      }
+
+      let created = this.createProfile({
         name:
           typeof item.name === 'string' && item.name.trim()
             ? item.name
-            : item.account?.email || 'Imported Profile',
+            : account?.email || 'Imported Profile',
         notes: item.notes,
         color: item.color,
         workspacePath: item.workspacePath,
-        account: item.account,
+        account,
         fingerprint: item.fingerprint,
         proxy: item.proxy,
       });
+
+      if (item.quota) {
+        created = this.updateProfile(created.id, { quota: item.quota });
+      }
       imported.push(created);
     }
     return imported;
