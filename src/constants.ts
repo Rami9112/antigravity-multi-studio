@@ -3,8 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 export const OAUTH_CLIENT_ID =
-  ['1071006060591', '-tmhssin2h21lcre235vtolojh4g403ep', '.apps.google', 'usercontent.com'].join('');
-export const OAUTH_CLIENT_SECRET = ['GOC', 'SPX-', 'K58FWR486LdLJ', '1mLB8sXC4z6qDAf'].join('');
+  process.env.ANTIGRAVITY_OAUTH_CLIENT_ID ||
+  ['1071006060591', '-tmhssin2h21lcre235vtolojh4g403ep', '.apps.google', 'usercontent.com'].join(
+    '',
+  );
+export const OAUTH_CLIENT_SECRET =
+  process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET ||
+  ['GOC', 'SPX-', 'K58FWR486LdLJ', '1mLB8sXC4z6qDAf'].join('');
 
 export const OAUTH_SCOPES = [
   'openid',

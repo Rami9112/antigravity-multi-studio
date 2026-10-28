@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="./assets/logo.png" width="112" height="112" alt="Anti-Multi Studio Logo" />
+  <img src="./assets/logo.png" width="112" height="112" alt="Antigravity Multi Studio Logo" />
 </p>
 
-<h1 align="center">Anti-Multi Studio</h1>
+<h1 align="center">Antigravity Multi Studio</h1>
 
 <p align="center">
   <strong>Google Antigravity 다중 계정 · 다중 인스턴스 동시 실행 & 기기 식별값(Fingerprint) · 프록시 IP 격리 플랫폼</strong><br/>

@@ -1,9 +1,14 @@
 {
-  "name": "anti-multi",
+  "name": "antigravity-multi-studio",
   "version": "1.0.0",
   "description": "Multi-instance, multi-account launcher and stealth fingerprint/proxy gateway for Google Antigravity with Web UI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rami9112/antigravity-multi-studio.git"
+  },
   "type": "module",
   "bin": {
+    "antigravity-multi-studio": "./dist/cli.js",
     "anti-multi": "./dist/cli.js"
   },
   "scripts": {
