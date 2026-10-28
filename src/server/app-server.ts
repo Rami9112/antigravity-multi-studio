@@ -12,7 +12,12 @@ import { fetchAccountQuota } from '../core/quota-service.js';
 import { checkOutboundIp } from '../gateway/ip-checker.js';
 import type { InstanceManager } from '../launcher/instance-manager.js';
 import type { AccountProfile, DeviceFingerprint, ProxyConfig } from '../types.js';
-import { parseProxyString } from '../utils/fingerprint.js';
+import { ANTI_MULTI_LOGO_SVG, getInlineLogoSvg } from '../ui/logo.js';
+import {
+  detectHostArch,
+  detectHostOsType,
+  parseProxyString,
+} from '../utils/fingerprint.js';
 import { parseJetskiStoredTokenJson } from '../utils/protobuf.js';
 
 export interface AppServerOptions {
@@ -107,6 +112,19 @@ export class AppServer {
     const pathname = parsedUrl.pathname;
 
     try {
+      // Serve Brand Logo & Favicon
+      if (
+        method === 'GET' &&
+        (pathname === '/logo.svg' || pathname === '/favicon.svg' || pathname === '/favicon.ico')
+      ) {
+        res.writeHead(200, {
+          'Content-Type': 'image/svg+xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=3600',
+        });
+        res.end(ANTI_MULTI_LOGO_SVG);
+        return;
+      }
+
       // Serve Web Dashboard on /
       if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
         const html = this.renderDashboardHtml();
@@ -123,6 +141,11 @@ export class AppServer {
         sendJson(res, 200, {
           ok: true,
           serverUrl: this.url,
+          hostPlatform: {
+            osType: detectHostOsType(),
+            arch: detectHostArch(),
+            platform: process.platform,
+          },
           settings: this.store.getSettings(),
           profiles: this.store.listProfiles(),
           runningInstances: this.instanceManager.listRunningInstances(),
@@ -709,6 +732,7 @@ function renderOAuthCallbackHtml(success: boolean, message: string): string {
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <title>${title} - Anti-Multi</title>
   <style>
     body {
@@ -755,6 +779,7 @@ function renderOAuthCallbackHtml(success: boolean, message: string): string {
 </head>
 <body>
   <div class="card">
+    <div style="margin-bottom: 14px;">${getInlineLogoSvg(52)}</div>
     <div class="badge">${title}</div>
     <h1>${safeMessage}</h1>
     <p>이 창은 자동으로 닫히며 Anti-Multi 웹 대시보드가 즉시 갱신됩니다.</p>

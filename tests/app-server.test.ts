@@ -38,13 +38,22 @@ describe('AppServer REST API routes', () => {
     const baseUrl = await server.start();
     servers.push(server);
 
-    // 0. Verify Web UI dashboard HTML is served
+    // 0. Verify Web UI dashboard HTML and custom SVG logo/favicon are served
     const uiRes = await requestViaProxy({
       url: `${baseUrl}/`,
       method: 'GET',
     });
     expect(uiRes.statusCode).toBe(200);
     expect(uiRes.text()).toContain('Anti-Multi Studio');
+    expect(uiRes.text()).toContain('/favicon.svg');
+
+    const logoRes = await requestViaProxy({
+      url: `${baseUrl}/logo.svg`,
+      method: 'GET',
+    });
+    expect(logoRes.statusCode).toBe(200);
+    expect(logoRes.headers['content-type']).toContain('image/svg+xml');
+    expect(logoRes.text()).toContain('<svg');
 
     // 1. Create profile with proxyString
     const createRes = await requestViaProxy({
@@ -94,8 +103,13 @@ describe('AppServer REST API routes', () => {
       method: 'GET',
     });
     expect(stateRes.statusCode).toBe(200);
-    const stateBody = stateRes.json<{ profiles: unknown[] }>();
+    const stateBody = stateRes.json<{
+      profiles: unknown[];
+      hostPlatform: { osType: string; arch: string; platform: string };
+    }>();
     expect(stateBody.profiles).toHaveLength(1);
+    expect(stateBody.hostPlatform).toBeDefined();
+    expect(['windows', 'darwin', 'linux']).toContain(stateBody.hostPlatform.osType);
 
     // 5. Delete profile
     const delRes = await requestViaProxy({

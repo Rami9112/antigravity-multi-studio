@@ -1,51 +1,70 @@
-# Anti-Multi Studio (`anti-multi`)
+<p align="center">
+  <img src="./assets/logo.svg" width="120" height="120" alt="Anti-Multi Studio Logo" />
+</p>
 
-Google Antigravity (v2.x Hub & Antigravity IDE) **다중 계정 관리 · 다중 인스턴스 동시 실행 · 기기 식별값(Device Fingerprint) 및 아웃바운드 프록시 IP 격리 플랫폼**입니다.
+<h1 align="center">Anti-Multi Studio</h1>
 
----
-
-## 핵심 아키텍처 및 격리 원리
-
-1. **다중 인스턴스 동시 실행 (`--user-data-dir` & `.gemini` 홈 분리)**
-   - `Antigravity.exe` (`dist/main.js`)의 `app.requestSingleInstanceLock()`은 Electron `--user-data-dir` 단위로 동작합니다.
-   - 프로필마다 독립된 `data/profiles/<profileId>/user-data`와 `data/profiles/<profileId>/home` (`USERPROFILE` / `HOME`)을 부여하여, **서로 다른 계정의 Antigravity 창을 동시에 여러 개** 띄워도 싱글 인스턴스 락이나 SQLite DB(`conversation_summaries.db`) 충돌이 발생하지 않습니다.
-
-2. **전역 Windows 자격 증명 관리자(`gemini:antigravity`) 충돌 우회 및 파일 토큰 격리**
-   - Antigravity v2.23.x의 `language_server.exe` (`codeassistclient.NewCompositeTokenStorage`)는 기본적으로 전역 OS Keyring(`CredReadW("gemini:antigravity")`)을 사용하여 다중 실행 시 계정이 서로 덮어써지는 문제가 있습니다.
-   - `anti-multi`는 자식 프로세스에 `SSH_CONNECTION="127.0.0.1 0 127.0.0.1 22"` 환경 변수를 주입하여 `shouldBypassKeyring()`을 활성화하고, 각 프로필의 독립 경로인 `<profileHome>/.gemini/jetski-standalone-oauth-token` 파일과 `<userDataDir>/User/globalStorage/state.vscdb` (`antigravityUnifiedStateSync.oauthToken`)를 사용하도록 격리합니다.
-   - 실행된 Antigravity 창 내부에서 새 계정으로 로그인하면 해당 토큰이 자동으로 감지되어 프로필 스토어에 동기화됩니다.
-
-3. **프로필별 기기 식별값(Device Fingerprint) 변조**
-   - 각 프로필마다 고유한 기기 식별값을 생성·보존합니다:
-     - `installationId` (`<profileHome>/.gemini/antigravity/installation_id`)
-     - `telemetry.machineId` (`auth0|user_<32_hex>`)
-     - `telemetry.macMachineId`, `telemetry.devDeviceId`, `telemetry.sqmId`, `storage.serviceMachineId` (`storage.json` & `state.vscdb`)
-     - `.updaterId` (`<userDataDir>/.updaterId`)
-     - `osType` (`windows` | `darwin` | `linux`), `arch` (`arm64` | `amd64`), `hostname` (`COMPUTERNAME`)
-
-4. **프로필별 전용 로컬 스텔스 게이트웨이 (`CLOUD_CODE_URL`) 및 프록시 IP 라우팅**
-   - 각 실행 인스턴스마다 전용 로컬 게이트웨이(`127.0.0.1:<ephemeral_port>`)를 띄우고 `CLOUD_CODE_URL`로 주입합니다.
-   - 아웃바운드 요청 시:
-     - 해당 프로필의 `Authorization: Bearer <access_token>` 강제 주입
-     - `User-Agent` (`antigravity/hub/2.23.1 (aidev_client; os_type=...; arch=...; cl=998881661)`) 및 `Client-Metadata` (`installationId=...`) 헤더 변조
-     - JSON 바디 내 `metadata.installationId`, `metadata.ideVersion`, `metadata.duetProject` 자동 재작성
-     - `/log`, `:recordTelemetry`, `:recordAnalytics` 텔레메트리 요청 로컬 드롭(선택 가능)
-     - 프로필에 설정된 **HTTP / HTTPS / SOCKS5 프록시**를 통해 업스트림(`daily-cloudcode-pa.googleapis.com`)으로 터널링하여 계정마다 서로 다른 공인 IP로 통신합니다.
+<p align="center">
+  <strong>Google Antigravity 다중 계정 · 다중 인스턴스 동시 실행 & 기기 식별값(Fingerprint) · 프록시 IP 격리 플랫폼</strong><br/>
+  지원 운영체제: <strong>macOS (Apple Silicon & Intel) · Windows (x64 & ARM64) · Linux (x64 & ARM64)</strong>
+</p>
 
 ---
 
-## 실행 방법
+## 핵심 기능
 
-```bash
-# 의존성 설치
+1. **다중 인스턴스 동시 실행 (`Multi-Instance Isolation`)**
+   - 프로필마다 완전히 분리된 `--user-data-dir` 및 독립 `HOME` / `USERPROFILE` / `XDG_*` 디렉터리를 시딩하여 여러 개의 Antigravity 창을 서로 다른 Google 계정으로 동시에 실행합니다.
+   - `SSH_CONNECTION` / `SSH_CLIENT` 환경 변수를 주입하여 `language_server`가 OS 전역 키체인(Windows 자격 증명 관리자 / macOS Keychain / Linux Secret Service) 대신 프로필별 격리 파일(`~/.gemini/jetski-standalone-oauth-token`)만 참조하도록 강제합니다.
+
+2. **프로필별 로컬 스텔스 게이트웨이 (`ProfileStealthGateway`)**
+   - 인스턴스마다 독립 로컬 HTTP 게이트웨이(`CLOUD_CODE_URL=http://127.0.0.1:<port>`)를 구동하여 `language_server`의 모든 `v1internal:*` 요청(단방향 JSON, Gzip 압축 본문, SSE 실시간 스트리밍 포함)을 가로챕니다.
+   - `User-Agent`, `Client-Metadata`, 요청 본문 `metadata.installationId` / `metadata.platform`, `Authorization: Bearer <token>` 헤더를 해당 프로필의 기기값과 토큰으로 실시간 치환합니다.
+   - 텔레메트리 및 로그 수집 엔드포인트(`/log`, `:recordTrajectoryAnalytics`, `:recordClientEvent`, `:recordCodeAssistMetrics`, `:uploadPerformanceProfile`)를 게이트웨이 단에서 차단합니다.
+
+3. **외부 프록시(SOCKS5 / HTTP CONNECT) 및 출구 IP 격리**
+   - 프로필마다 개별 `socks5://` 또는 `http://` 프록시를 지정할 수 있으며, 원클릭 출구 IP / 국가 / 지연시간 테스트를 지원합니다.
+
+4. **온보딩 / 약관 모달 자동 스킵 (`Zero-Prompt Workspace Entry`)**
+   - `app_storage.json`, `storage.json`, `state.vscdb`, `antigravity_state.pbtxt`, `.gemini/config/*`를 사전 시딩하여 첫 실행 시 `Security Notice & Data Use` 및 초기 설정 마법사 없이 즉시 메인 워크스페이스로 진입합니다.
+
+---
+
+## 운영체제별 실행 방법 (macOS / Windows / Linux)
+
+> **필수 요구사항**: Node.js `v22.5.0` 이상 (내장 `node:sqlite` 사용으로 네이티브 C++ 빌드 도구나 외부 패키지가 필요하지 않습니다)
+
+### 1. Windows
+```powershell
+# 의존성 설치 및 빌드
 pnpm install
+pnpm build
 
-# 웹 UI 대시보드 서버 실행 (기본 http://127.0.0.1:4300)
-pnpm dev
-
-# 프로덕션 빌드 및 실행
+# 실행 (자동으로 http://127.0.0.1:4300 웹 대시보드 오픈)
 pnpm start
-
-# 전체 정적 검증(lint/typecheck/build) 및 단위·통합 테스트 실행
-pnpm verify
+# 또는 start-windows.bat 더블클릭
 ```
+- **자동 탐색 경로**: `%LOCALAPPDATA%\Programs\antigravity\Antigravity.exe`, `C:\Program Files\Antigravity\Antigravity.exe`
+- **로컬 계정 가져오기**: Windows 자격 증명 관리자(`gemini:antigravity`), `~/.gemini/jetski-standalone-oauth-token`, `%APPDATA%\Antigravity\User\globalStorage\state.vscdb` 자동 지원
+
+### 2. macOS (Apple Silicon `arm64` / Intel `x64`)
+```bash
+pnpm install
+pnpm build
+
+chmod +x start-mac.command
+./start-mac.command
+```
+- **자동 탐색 경로**: `/Applications/Antigravity.app`, `~/Applications/Antigravity.app` (설정에서 `.app` 번들 경로만 입력해도 내부 `Contents/MacOS/Antigravity` 실행 바이너리를 자동으로 찾아 독립 프로세스로 스폰합니다)
+- **로컬 계정 가져오기**: macOS Keychain (`security find-generic-password`), `~/.gemini/jetski-standalone-oauth-token`, `~/Library/Application Support/Antigravity/User/globalStorage/state.vscdb` 자동 지원
+
+### 3. Linux (`x64` / `arm64`)
+```bash
+pnpm install
+pnpm build
+
+chmod +x start-linux.sh
+./start-linux.sh
+```
+- **자동 탐색 경로**: `/usr/bin/antigravity`, `/opt/Antigravity/antigravity`, `~/.local/bin/antigravity`, `/snap/bin/antigravity`, Flatpak, `~/Applications/Antigravity.AppImage`
+- **로컬 계정 가져오기**: FreeDesktop Secret Service (`secret-tool`), `~/.gemini/jetski-standalone-oauth-token`, `~/.config/Antigravity/User/globalStorage/state.vscdb` 자동 지원

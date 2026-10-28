@@ -12,4 +12,5 @@ export * from './core/local-importer.js';
 export * from './launcher/profile-seeder.js';
 export * from './launcher/instance-manager.js';
 export * from './server/app-server.js';
+export * from './ui/logo.js';
 export * from './ui/dashboard.js';

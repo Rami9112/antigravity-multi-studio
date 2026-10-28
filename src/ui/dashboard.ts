@@ -1,9 +1,14 @@
+import { getInlineLogoSvg } from './logo.js';
+
 export function renderDashboardHtml(): string {
+  const headerLogoSvg = getInlineLogoSvg(44);
+  const emptyStateLogoSvg = getInlineLogoSvg(64);
   return `<!doctype html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <title>Anti-Multi — Antigravity 다중 계정 · 다중 인스턴스 · 스텔스 런처</title>
   <style>
     :root {
@@ -58,17 +63,14 @@ export function renderDashboardHtml(): string {
       gap: 12px;
     }
     .brand-logo {
-      width: 40px;
-      height: 40px;
+      width: 44px;
+      height: 44px;
       border-radius: 12px;
-      background: linear-gradient(135deg, #6366f1, #06b6d4);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: 800;
-      font-size: 18px;
-      color: white;
-      box-shadow: 0 8px 20px rgba(99, 102, 241, 0.35);
+      flex-shrink: 0;
+      filter: drop-shadow(0 6px 16px rgba(99, 102, 241, 0.35));
     }
     .brand-title h1 {
       font-size: 18px;
@@ -439,9 +441,12 @@ export function renderDashboardHtml(): string {
   <header>
     <div class="container topbar">
       <div class="brand">
-        <div class="brand-logo">AM</div>
+        <div class="brand-logo">${headerLogoSvg}</div>
         <div class="brand-title">
-          <h1>Anti-Multi Studio</h1>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <h1>Anti-Multi Studio</h1>
+            <span id="host-os-badge" class="badge badge-pro" style="font-size:10px;">macOS · Windows · Linux</span>
+          </div>
           <p>Antigravity 다중 계정 · 다중 인스턴스 동시 실행 · 기기값(Fingerprint) & 프록시 IP 격리 플랫폼</p>
         </div>
       </div>
@@ -609,8 +614,8 @@ export function renderDashboardHtml(): string {
     <div class="modal">
       <h3>⚙️ 전역 설정 및 프로필 백업/복원</h3>
       <div class="form-group">
-        <label>Antigravity 실행 파일 경로 (<code>Antigravity.exe</code>)</label>
-        <input type="text" id="sm-exe-path" placeholder="C:\\Users\\...\\AppData\\Local\\Programs\\antigravity\\Antigravity.exe" />
+        <label>Antigravity 실행 파일 또는 앱 번들 경로 (Windows <code>.exe</code> / macOS <code>.app</code> / Linux 바이너리)</label>
+        <input type="text" id="sm-exe-path" placeholder="Windows: C:\\Users\\...\\Antigravity.exe | macOS: /Applications/Antigravity.app | Linux: /usr/bin/antigravity" />
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -695,6 +700,19 @@ export function renderDashboardHtml(): string {
       const running = appState.runningInstances || [];
       const runningByProfile = new Map(running.map(r => [r.profileId, r]));
 
+      if (appState.hostPlatform) {
+        const osLabel =
+          appState.hostPlatform.osType === 'darwin'
+            ? 'macOS'
+            : appState.hostPlatform.osType === 'linux'
+              ? 'Linux'
+              : 'Windows';
+        const badgeEl = document.getElementById('host-os-badge');
+        if (badgeEl) {
+          badgeEl.textContent = \`\${osLabel} (\${appState.hostPlatform.arch})\`;
+        }
+      }
+
       document.getElementById('stat-profiles').textContent = profiles.length;
       document.getElementById('stat-accounts').textContent = profiles.filter(p => p.account && p.account.email).length;
       document.getElementById('stat-running').textContent = running.length;
@@ -741,6 +759,7 @@ export function renderDashboardHtml(): string {
       if (profiles.length === 0) {
         container.innerHTML = \`
           <div class="empty-state">
+            <div style="margin-bottom: 14px;">${emptyStateLogoSvg}</div>
             <h3 style="color: var(--text); margin-bottom: 8px;">등록된 프로필이 없습니다</h3>
             <p style="margin-bottom: 20px;">상단의 <strong>[📥 현재 PC 계정 가져오기]</strong> 또는 <strong>[➕ 새 프로필 생성]</strong> 버튼을 눌러 첫 격리 프로필을 만드세요.</p>
             <div style="display:flex; gap:10px; justify-content:center;">
@@ -911,8 +930,12 @@ export function renderDashboardHtml(): string {
         proxyVal = \`\${p.proxy.protocol}://\${auth}\${p.proxy.host}:\${p.proxy.port}\`;
       }
       document.getElementById('pm-proxy').value = proxyVal;
-      document.getElementById('pm-os').value = p ? p.fingerprint.osType : 'windows';
-      document.getElementById('pm-arch').value = p ? p.fingerprint.arch : 'arm64';
+      const defaultOs =
+        (appState.hostPlatform && appState.hostPlatform.osType) || 'windows';
+      const defaultArch =
+        (appState.hostPlatform && appState.hostPlatform.arch) || 'amd64';
+      document.getElementById('pm-os').value = p ? p.fingerprint.osType : defaultOs;
+      document.getElementById('pm-arch').value = p ? p.fingerprint.arch : defaultArch;
       document.getElementById('pm-hostname').value = p ? p.fingerprint.hostname : '';
       document.getElementById('pm-block-telemetry').value = p ? String(p.fingerprint.blockTelemetry) : 'true';
       document.getElementById('pm-refresh-token').value = '';
