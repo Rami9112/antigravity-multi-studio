@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/logo.svg" width="120" height="120" alt="Anti-Multi Studio Logo" />
+  <img src="./assets/logo.png" width="112" height="112" alt="Anti-Multi Studio Logo" />
 </p>
 
 <h1 align="center">Anti-Multi Studio</h1>

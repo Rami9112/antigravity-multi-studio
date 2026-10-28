@@ -1,14 +1,14 @@
-import { getInlineLogoSvg } from './logo.js';
+import { getInlineLogoImgHtml } from './logo.js';
 
 export function renderDashboardHtml(): string {
-  const headerLogoSvg = getInlineLogoSvg(44);
-  const emptyStateLogoSvg = getInlineLogoSvg(64);
+  const headerLogoImg = getInlineLogoImgHtml(44);
+  const emptyStateLogoImg = getInlineLogoImgHtml(64);
   return `<!doctype html>
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
   <title>Anti-Multi — Antigravity 다중 계정 · 다중 인스턴스 · 스텔스 런처</title>
   <style>
     :root {
@@ -441,7 +441,7 @@ export function renderDashboardHtml(): string {
   <header>
     <div class="container topbar">
       <div class="brand">
-        <div class="brand-logo">${headerLogoSvg}</div>
+        <div class="brand-logo">${headerLogoImg}</div>
         <div class="brand-title">
           <div style="display:flex; align-items:center; gap:8px;">
             <h1>Anti-Multi Studio</h1>
@@ -759,7 +759,7 @@ export function renderDashboardHtml(): string {
       if (profiles.length === 0) {
         container.innerHTML = \`
           <div class="empty-state">
-            <div style="margin-bottom: 14px;">${emptyStateLogoSvg}</div>
+            <div style="margin-bottom: 14px;">${emptyStateLogoImg}</div>
             <h3 style="color: var(--text); margin-bottom: 8px;">등록된 프로필이 없습니다</h3>
             <p style="margin-bottom: 20px;">상단의 <strong>[📥 현재 PC 계정 가져오기]</strong> 또는 <strong>[➕ 새 프로필 생성]</strong> 버튼을 눌러 첫 격리 프로필을 만드세요.</p>
             <div style="display:flex; gap:10px; justify-content:center;">

@@ -12,7 +12,11 @@ import { fetchAccountQuota } from '../core/quota-service.js';
 import { checkOutboundIp } from '../gateway/ip-checker.js';
 import type { InstanceManager } from '../launcher/instance-manager.js';
 import type { AccountProfile, DeviceFingerprint, ProxyConfig } from '../types.js';
-import { ANTI_MULTI_LOGO_SVG, getInlineLogoSvg } from '../ui/logo.js';
+import {
+  getFaviconPngBuffer,
+  getInlineLogoImgHtml,
+  getLogoPngBuffer,
+} from '../ui/logo.js';
 import {
   detectHostArch,
   detectHostOsType,
@@ -112,16 +116,26 @@ export class AppServer {
     const pathname = parsedUrl.pathname;
 
     try {
-      // Serve Brand Logo & Favicon
-      if (
-        method === 'GET' &&
-        (pathname === '/logo.svg' || pathname === '/favicon.svg' || pathname === '/favicon.ico')
-      ) {
+      // Serve Brand Logo & Favicon (PNG raster image)
+      if (method === 'GET' && pathname === '/logo.png') {
+        const buf = getLogoPngBuffer();
         res.writeHead(200, {
-          'Content-Type': 'image/svg+xml; charset=utf-8',
+          'Content-Type': 'image/png',
+          'Content-Length': buf.length,
           'Cache-Control': 'public, max-age=3600',
         });
-        res.end(ANTI_MULTI_LOGO_SVG);
+        res.end(buf);
+        return;
+      }
+
+      if (method === 'GET' && (pathname === '/favicon.png' || pathname === '/favicon.ico')) {
+        const buf = getFaviconPngBuffer();
+        res.writeHead(200, {
+          'Content-Type': 'image/png',
+          'Content-Length': buf.length,
+          'Cache-Control': 'public, max-age=3600',
+        });
+        res.end(buf);
         return;
       }
 
@@ -779,7 +793,7 @@ function renderOAuthCallbackHtml(success: boolean, message: string): string {
 </head>
 <body>
   <div class="card">
-    <div style="margin-bottom: 14px;">${getInlineLogoSvg(52)}</div>
+    <div style="margin-bottom: 14px;">${getInlineLogoImgHtml(52)}</div>
     <div class="badge">${title}</div>
     <h1>${safeMessage}</h1>
     <p>이 창은 자동으로 닫히며 Anti-Multi 웹 대시보드가 즉시 갱신됩니다.</p>

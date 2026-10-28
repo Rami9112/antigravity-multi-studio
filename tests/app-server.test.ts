@@ -38,22 +38,30 @@ describe('AppServer REST API routes', () => {
     const baseUrl = await server.start();
     servers.push(server);
 
-    // 0. Verify Web UI dashboard HTML and custom SVG logo/favicon are served
+    // 0. Verify Web UI dashboard HTML and PNG logo/favicon are served
     const uiRes = await requestViaProxy({
       url: `${baseUrl}/`,
       method: 'GET',
     });
     expect(uiRes.statusCode).toBe(200);
     expect(uiRes.text()).toContain('Anti-Multi Studio');
-    expect(uiRes.text()).toContain('/favicon.svg');
+    expect(uiRes.text()).toContain('/favicon.png');
+    expect(uiRes.text()).toContain('/logo.png');
 
     const logoRes = await requestViaProxy({
-      url: `${baseUrl}/logo.svg`,
+      url: `${baseUrl}/logo.png`,
       method: 'GET',
     });
     expect(logoRes.statusCode).toBe(200);
-    expect(logoRes.headers['content-type']).toContain('image/svg+xml');
-    expect(logoRes.text()).toContain('<svg');
+    expect(logoRes.headers['content-type']).toContain('image/png');
+    expect(logoRes.body.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(true);
+
+    const favRes = await requestViaProxy({
+      url: `${baseUrl}/favicon.png`,
+      method: 'GET',
+    });
+    expect(favRes.statusCode).toBe(200);
+    expect(favRes.headers['content-type']).toContain('image/png');
 
     // 1. Create profile with proxyString
     const createRes = await requestViaProxy({
