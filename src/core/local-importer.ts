@@ -10,7 +10,12 @@ import {
 } from '../utils/protobuf.js';
 
 export interface LocalImportDetection {
-  source: 'windows-credential-manager' | 'jetski-file-store' | 'state-vscdb';
+  source:
+    | 'windows-credential-manager'
+    | 'macos-keychain'
+    | 'linux-secret-service'
+    | 'jetski-file-store'
+    | 'state-vscdb';
   account: OAuthTokenData;
   hostInstallationId?: string;
 }
@@ -92,6 +97,77 @@ export function readWindowsKeyringStoredTokenJson(): string | null {
   }
 }
 
+export function readMacosKeychainStoredTokenJson(): string | null {
+  if (process.platform !== 'darwin') {
+    return null;
+  }
+
+  const queries: string[][] = [
+    ['find-generic-password', '-s', 'gemini', '-a', 'antigravity', '-w'],
+    ['find-generic-password', '-s', 'gemini:antigravity', '-w'],
+    ['find-generic-password', '-s', 'antigravity', '-w'],
+  ];
+
+  for (const args of queries) {
+    try {
+      const output = execFileSync('/usr/bin/security', args, {
+        encoding: 'utf8',
+        timeout: 4000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (output) return output;
+    } catch {
+      // try next query
+    }
+  }
+  return null;
+}
+
+export function readLinuxSecretServiceStoredTokenJson(): string | null {
+  if (process.platform !== 'linux') {
+    return null;
+  }
+
+  const queries: string[][] = [
+    ['lookup', 'service', 'gemini', 'username', 'antigravity'],
+    ['lookup', 'service', 'gemini', 'user', 'antigravity'],
+    ['lookup', 'service', 'gemini:antigravity', 'username', 'antigravity'],
+  ];
+
+  for (const args of queries) {
+    try {
+      const output = execFileSync('secret-tool', args, {
+        encoding: 'utf8',
+        timeout: 4000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (output) return output;
+    } catch {
+      // try next query
+    }
+  }
+  return null;
+}
+
+export function readHostKeyringStoredTokenJson(): {
+  source: 'windows-credential-manager' | 'macos-keychain' | 'linux-secret-service';
+  raw: string;
+} | null {
+  if (process.platform === 'win32') {
+    const raw = readWindowsKeyringStoredTokenJson();
+    return raw ? { source: 'windows-credential-manager', raw } : null;
+  }
+  if (process.platform === 'darwin') {
+    const raw = readMacosKeychainStoredTokenJson();
+    return raw ? { source: 'macos-keychain', raw } : null;
+  }
+  if (process.platform === 'linux') {
+    const raw = readLinuxSecretServiceStoredTokenJson();
+    return raw ? { source: 'linux-secret-service', raw } : null;
+  }
+  return null;
+}
+
 export function readHostInstallationId(homeDir = os.homedir()): string | undefined {
   const candidates = [
     path.join(homeDir, '.gemini', 'antigravity', 'installation_id'),
@@ -117,6 +193,7 @@ export function readAccountFromStateVscdb(vscdbPath: string): Partial<OAuthToken
   try {
     const db = new DatabaseSync(vscdbPath, { open: true, readOnly: true });
     try {
+      db.exec('PRAGMA busy_timeout = 3000;');
       const stmt = db.prepare(
         'SELECT value FROM ItemTable WHERE key = ?',
       );
@@ -141,6 +218,7 @@ export function detectLocalHostAntigravityAccount(
   options: {
     homeDir?: string;
     appDataDir?: string;
+    xdgConfigHome?: string;
     keyringJsonOverride?: string | null;
   } = {},
 ): LocalImportDetection | null {
@@ -149,6 +227,10 @@ export function detectLocalHostAntigravityAccount(
     options.appDataDir ??
     process.env.APPDATA ??
     path.join(homeDir, 'AppData', 'Roaming');
+  const xdgConfigHome =
+    options.xdgConfigHome ??
+    process.env.XDG_CONFIG_HOME ??
+    path.join(homeDir, '.config');
 
   const hostInstallationId = readHostInstallationId(homeDir);
 
@@ -180,16 +262,19 @@ export function detectLocalHostAntigravityAccount(
     }
   }
 
-  // 2. Check Windows Credential Manager (`gemini:antigravity`)
-  const keyringRaw =
+  // 2. Check OS Keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service)
+  const keyringResult =
     options.keyringJsonOverride !== undefined
       ? options.keyringJsonOverride
-      : readWindowsKeyringStoredTokenJson();
-  if (keyringRaw) {
-    const parsed = parseJetskiStoredTokenJson(keyringRaw);
+        ? { source: 'windows-credential-manager' as const, raw: options.keyringJsonOverride }
+        : null
+      : readHostKeyringStoredTokenJson();
+
+  if (keyringResult?.raw) {
+    const parsed = parseJetskiStoredTokenJson(keyringResult.raw);
     if (parsed && (parsed.refreshToken || parsed.accessToken)) {
       return {
-        source: 'windows-credential-manager',
+        source: keyringResult.source,
         hostInstallationId,
         account: {
           accessToken: parsed.accessToken || '',
@@ -206,20 +291,34 @@ export function detectLocalHostAntigravityAccount(
     }
   }
 
-  // 3. Check state.vscdb in %APPDATA%/Antigravity/User/globalStorage/state.vscdb
-  const vscdbCandidates = [
-    path.join(appDataDir, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
-    path.join(
-      homeDir,
-      'Library',
-      'Application Support',
-      'Antigravity',
-      'User',
-      'globalStorage',
-      'state.vscdb',
-    ),
-    path.join(homeDir, '.config', 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
-  ];
+  // 3. Check state.vscdb across Windows, macOS, and Linux standard & IDE paths
+  const appFolderVariants = ['Antigravity', 'antigravity', 'Antigravity IDE', 'antigravity-ide'];
+  const vscdbCandidates: string[] = [];
+
+  for (const folder of appFolderVariants) {
+    vscdbCandidates.push(
+      path.join(appDataDir, folder, 'User', 'globalStorage', 'state.vscdb'),
+    );
+    vscdbCandidates.push(
+      path.join(
+        homeDir,
+        'Library',
+        'Application Support',
+        folder,
+        'User',
+        'globalStorage',
+        'state.vscdb',
+      ),
+    );
+    vscdbCandidates.push(
+      path.join(xdgConfigHome, folder, 'User', 'globalStorage', 'state.vscdb'),
+    );
+    if (xdgConfigHome !== path.join(homeDir, '.config')) {
+      vscdbCandidates.push(
+        path.join(homeDir, '.config', folder, 'User', 'globalStorage', 'state.vscdb'),
+      );
+    }
+  }
 
   for (const vscdbPath of vscdbCandidates) {
     const parsed = readAccountFromStateVscdb(vscdbPath);

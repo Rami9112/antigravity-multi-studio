@@ -2,8 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  getDefaultAntigravityExecutableCandidates,
+  normalizeConfiguredExecutablePath,
   PROFILE_COLORS,
+  resolveAntigravityExecutablePath,
 } from '../constants.js';
 import type {
   AccountProfile,
@@ -75,12 +76,7 @@ export class ProfileStore {
   }
 
   private detectDefaultExecutable(): string | undefined {
-    for (const candidate of getDefaultAntigravityExecutableCandidates()) {
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-    return undefined;
+    return resolveAntigravityExecutablePath();
   }
 
   private createDefaultStoreData(): StoreData {
@@ -108,14 +104,18 @@ export class ProfileStore {
       const raw = fs.readFileSync(this.storeFilePath, 'utf8');
       const parsed = JSON.parse(raw) as Partial<StoreData>;
       const fallback = this.createDefaultStoreData();
+      const configuredExe = parsed.settings?.antigravityExecutablePath;
+      const resolvedExe =
+        resolveAntigravityExecutablePath(configuredExe) ||
+        fallback.settings.antigravityExecutablePath ||
+        configuredExe;
+
       return {
         version: 1,
         settings: {
           ...fallback.settings,
           ...(parsed.settings ?? {}),
-          antigravityExecutablePath:
-            parsed.settings?.antigravityExecutablePath ||
-            fallback.settings.antigravityExecutablePath,
+          antigravityExecutablePath: resolvedExe,
         },
         profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
       };
@@ -138,9 +138,18 @@ export class ProfileStore {
   }
 
   public updateSettings(patch: Partial<GlobalSettings>): GlobalSettings {
+    const nextPatch = { ...patch };
+    if (nextPatch.antigravityExecutablePath) {
+      const normalized = normalizeConfiguredExecutablePath(
+        nextPatch.antigravityExecutablePath,
+      );
+      if (normalized) {
+        nextPatch.antigravityExecutablePath = normalized;
+      }
+    }
     this.data.settings = {
       ...this.data.settings,
-      ...patch,
+      ...nextPatch,
     };
     this.saveData();
     return this.getSettings();

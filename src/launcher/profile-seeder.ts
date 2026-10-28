@@ -110,6 +110,17 @@ export function seedProfileEnvironment(
       storageJsonObj = {};
     }
   }
+  const existingTelemetry =
+    storageJsonObj.telemetry && typeof storageJsonObj.telemetry === 'object'
+      ? (storageJsonObj.telemetry as Record<string, unknown>)
+      : {};
+  storageJsonObj.telemetry = {
+    ...existingTelemetry,
+    machineId: profile.fingerprint.machineId,
+    macMachineId: profile.fingerprint.macMachineId,
+    devDeviceId: profile.fingerprint.devDeviceId,
+    sqmId: profile.fingerprint.sqmId,
+  };
   storageJsonObj['telemetry.machineId'] = profile.fingerprint.machineId;
   storageJsonObj['telemetry.macMachineId'] = profile.fingerprint.macMachineId;
   storageJsonObj['telemetry.devDeviceId'] = profile.fingerprint.devDeviceId;
@@ -121,11 +132,15 @@ export function seedProfileEnvironment(
   const vscdbPath = path.join(globalStorageDir, 'state.vscdb');
   const db = new DatabaseSync(vscdbPath);
   try {
+    db.exec('PRAGMA busy_timeout = 3000;');
     db.exec('CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)');
     const upsert = db.prepare('INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)');
     upsert.run('storage.serviceMachineId', profile.fingerprint.serviceMachineId);
     upsert.run('telemetry.serviceMachineId', profile.fingerprint.serviceMachineId);
     upsert.run('antigravityOnboarding', 'true');
+    db.prepare('DELETE FROM ItemTable WHERE key = ?').run(
+      'jetskiStateSync.agentManagerInitState',
+    );
 
     if (profile.account && (profile.account.accessToken || profile.account.refreshToken)) {
       const encodedProto = encodeUnifiedStateOAuthTokenBase64(profile.account);
@@ -289,6 +304,7 @@ export function syncBackProfileAuthFromDisk(
       const stat = fs.statSync(vscdbPath);
       const db = new DatabaseSync(vscdbPath, { open: true, readOnly: true });
       try {
+        db.exec('PRAGMA busy_timeout = 3000;');
         const row = db
           .prepare('SELECT value FROM ItemTable WHERE key = ?')
           .get('antigravityUnifiedStateSync.oauthToken') as

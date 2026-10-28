@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  getDefaultAntigravityExecutableCandidates,
+  resolveAntigravityExecutablePath,
+} from '../src/constants.js';
 import { detectLocalHostAntigravityAccount } from '../src/core/local-importer.js';
 import {
   buildGoogleOAuthUrl,
@@ -256,5 +260,46 @@ describe('ProfileStore, OAuthService, QuotaService, and LocalImporter', () => {
     expect(fromJetski?.source).toBe('jetski-file-store');
     expect(fromJetski?.hostInstallationId).toBe('99999999-8888-4777-8666-555555555555');
     expect(fromJetski?.account.accessToken).toBe('ya29.local-host-token');
+
+    // 3. Test macOS Application Support state.vscdb & .app bundle resolution
+    const macHome = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-multi-mac-'));
+    tempDirs.push(macHome);
+    const macStorageDir = path.join(
+      macHome,
+      'Library',
+      'Application Support',
+      'Antigravity',
+      'User',
+      'globalStorage',
+    );
+    fs.mkdirSync(macStorageDir, { recursive: true });
+    fs.copyFileSync(vscdbPath, path.join(macStorageDir, 'state.vscdb'));
+
+    const fromMac = detectLocalHostAntigravityAccount({
+      homeDir: macHome,
+      appDataDir: path.join(macHome, 'nonexistent'),
+      keyringJsonOverride: null,
+    });
+    expect(fromMac?.source).toBe('state-vscdb');
+    expect(fromMac?.account.refreshToken).toBe('1//0g-local-host-refresh');
+
+    const fakeAppBundle = path.join(macHome, 'Applications', 'Antigravity.app');
+    const fakeMacBinary = path.join(fakeAppBundle, 'Contents', 'MacOS', 'Antigravity');
+    fs.mkdirSync(path.dirname(fakeMacBinary), { recursive: true });
+    fs.writeFileSync(fakeMacBinary, '#!/bin/sh\n', 'utf8');
+
+    expect(resolveAntigravityExecutablePath(fakeAppBundle, 'darwin', macHome)).toBe(
+      fakeMacBinary,
+    );
+    expect(
+      getDefaultAntigravityExecutableCandidates('darwin', '/Users/test').some((p) =>
+        p.includes('/Applications/Antigravity.app/Contents/MacOS/Antigravity'),
+      ),
+    ).toBe(true);
+    expect(
+      getDefaultAntigravityExecutableCandidates('linux', '/home/test').some((p) =>
+        p.includes('/usr/bin/antigravity'),
+      ),
+    ).toBe(true);
   });
 });

@@ -174,9 +174,20 @@ export class ProfileStealthGateway {
       }
 
       // 1. Spoof User-Agent and Client-Metadata to match this profile's isolated device fingerprint
-      headers['user-agent'] = buildHubUserAgent(this.profile.fingerprint);
+      // If the incoming request from language_server has a live hub version/CL, preserve its version/CL while spoofing os_type/arch.
+      const incomingUa = String(req.headers['user-agent'] ?? '');
+      const liveHubMatch = /antigravity\/hub\/([0-9.]+).*?\bcl=([0-9]+)/i.exec(incomingUa);
+      const effectiveFp = liveHubMatch
+        ? {
+            ...this.profile.fingerprint,
+            hubVersion: liveHubMatch[1]!,
+            hubCl: liveHubMatch[2]!,
+          }
+        : this.profile.fingerprint;
+
+      headers['user-agent'] = buildHubUserAgent(effectiveFp);
       delete headers['User-Agent'];
-      headers['client-metadata'] = buildClientMetadataHeader(this.profile.fingerprint);
+      headers['client-metadata'] = buildClientMetadataHeader(effectiveFp);
       delete headers['Client-Metadata'];
 
       // 2. Force account OAuth token isolation

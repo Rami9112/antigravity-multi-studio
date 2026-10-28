@@ -1,5 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
+import { resolveAntigravityExecutablePath } from '../constants.js';
 import {
   ensureFreshAccountToken,
   fetchGoogleUserInfo,
@@ -163,13 +165,18 @@ export class InstanceManager {
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      // Isolate os.homedir() / os.UserHomeDir() for both Electron and language_server.exe
+      // Isolate os.homedir() / os.UserHomeDir() for Electron and language_server across Windows, macOS, and Linux
       USERPROFILE: profileHomeDir,
       HOME: profileHomeDir,
-      // Force language_server.exe compositeTokenStorage to use per-profile file storage
-      // (<profileHomeDir>/.gemini/jetski-standalone-oauth-token) instead of global Windows Keyring!
+      XDG_CONFIG_HOME: path.join(profileHomeDir, '.config'),
+      XDG_DATA_HOME: path.join(profileHomeDir, '.local', 'share'),
+      XDG_CACHE_HOME: path.join(profileHomeDir, '.cache'),
+      XDG_STATE_HOME: path.join(profileHomeDir, '.local', 'state'),
+      // Force language_server compositeTokenStorage to use per-profile file storage
+      // (<profileHomeDir>/.gemini/jetski-standalone-oauth-token) instead of global OS Keyring/Keychain!
       SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 22',
-      // Route all language_server.exe Cloud Code requests through our per-profile stealth gateway
+      SSH_CLIENT: '127.0.0.1 0 22',
+      // Route all language_server Cloud Code requests through our per-profile stealth gateway
       CLOUD_CODE_URL: gatewayUrl,
       // Spoof host identity environment variables
       COMPUTERNAME: profile.fingerprint.hostname,
@@ -180,7 +187,17 @@ export class InstanceManager {
       ANTIGRAVITY_PROFILE_NAME: profile.name,
     };
 
+    const winDriveMatch = /^([A-Za-z]:)(\\.*)$/.exec(profileHomeDir);
+    if (winDriveMatch) {
+      env.HOMEDRIVE = winDriveMatch[1];
+      env.HOMEPATH = winDriveMatch[2];
+    }
+
     delete env.ELECTRON_RUN_AS_NODE;
+    // Clean AppImage environment variables on Linux so spawned instances do not inherit mount overrides
+    for (const appImageVar of ['APPIMAGE', 'APPDIR', 'ARGV0', 'OWD', 'LD_PRELOAD']) {
+      delete env[appImageVar];
+    }
 
     if (profile.proxy.enabled && profile.proxy.host && profile.proxy.port) {
       const fullProxyUrl = formatProxyUrl(profile.proxy, true);
@@ -207,9 +224,11 @@ export class InstanceManager {
       throw new Error(`Profile not found: ${profileId}`);
     }
 
+    const configuredExe = this.store.getSettings().antigravityExecutablePath;
     const exePath =
       options.executableOverride ||
-      this.store.getSettings().antigravityExecutablePath;
+      resolveAntigravityExecutablePath(configuredExe) ||
+      configuredExe;
     if (!exePath || !fs.existsSync(exePath)) {
       throw new Error(
         `Antigravity executable not found at "${exePath ?? ''}". Please configure the executable path in Settings.`,
@@ -432,6 +451,15 @@ export class InstanceManager {
           windowsHide: true,
         });
       } else {
+        if (inst.pid) {
+          try {
+            execFileSync('pkill', ['-TERM', '-P', String(inst.pid)], {
+              stdio: 'ignore',
+            });
+          } catch {
+            // ignore if pkill unavailable or no children
+          }
+        }
         inst.child.kill('SIGTERM');
       }
     } catch {
@@ -443,6 +471,26 @@ export class InstanceManager {
     }
 
     await exitPromise;
+
+    // On macOS / Linux, if the process did not exit after SIGTERM within 1.5s, force kill with SIGKILL
+    if (process.platform !== 'win32' && inst.child.exitCode === null) {
+      try {
+        if (inst.pid) {
+          try {
+            execFileSync('pkill', ['-KILL', '-P', String(inst.pid)], {
+              stdio: 'ignore',
+            });
+          } catch {
+            // ignore
+          }
+        }
+        inst.child.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
     await inst.gateway.stop();
     if (process.platform === 'win32') {
       await new Promise((r) => setTimeout(r, 150));
