@@ -5,8 +5,12 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  expandHomePath,
   getDefaultAntigravityExecutableCandidates,
+  isForeignOsPath,
+  OFFICIAL_HUB_VERSION,
   resolveAntigravityExecutablePath,
+  resolveLaunchWorkspacePath,
 } from '../src/constants.js';
 import { detectLocalHostAntigravityAccount } from '../src/core/local-importer.js';
 import {
@@ -291,6 +295,14 @@ describe('ProfileStore, OAuthService, QuotaService, and LocalImporter', () => {
     expect(resolveAntigravityExecutablePath(fakeAppBundle, 'darwin', macHome)).toBe(
       fakeMacBinary,
     );
+    // Tilde expansion for ~/Applications/Antigravity.app on macOS
+    expect(
+      resolveAntigravityExecutablePath(
+        '~/Applications/Antigravity.app',
+        'darwin',
+        macHome,
+      ),
+    ).toBe(fakeMacBinary);
     expect(
       getDefaultAntigravityExecutableCandidates('darwin', '/Users/test').some((p) =>
         p.includes('/Applications/Antigravity.app/Contents/MacOS/Antigravity'),
@@ -301,5 +313,71 @@ describe('ProfileStore, OAuthService, QuotaService, and LocalImporter', () => {
         p.includes('/usr/bin/antigravity'),
       ),
     ).toBe(true);
+  });
+
+  it('handles cross-platform path resolution and ARM64/macOS profile portability', () => {
+    expect(expandHomePath('~/projects/app', '/Users/macuser', 'darwin')).toBe(
+      '/Users/macuser/projects/app',
+    );
+    expect(isForeignOsPath('C:\\projects\\personal', 'darwin', '/Users/macuser')).toBe(true);
+    expect(isForeignOsPath('/Users/macuser/projects', 'win32', 'C:\\Users\\USER')).toBe(true);
+
+    const foreignWs = resolveLaunchWorkspacePath(
+      'C:\\projects\\personal',
+      'darwin',
+      '/Users/macuser',
+    );
+    expect(foreignWs.exists).toBe(false);
+    expect(foreignWs.foreignOs).toBe(true);
+    expect(foreignWs.resolved).toBeUndefined();
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-multi-portability-'));
+    tempDirs.push(dir);
+    const store = new ProfileStore(dir);
+
+    const imported = store.importProfiles(
+      [
+        {
+          name: 'ARM64 Laptop Profile',
+          workspacePath:
+            process.platform === 'win32'
+              ? '/Users/macuser/nonexistent'
+              : 'C:\\projects\\personal',
+          account: {
+            accessToken: 'ya29.arm64',
+            refreshToken: '1//0g-arm64',
+            expiryTimestamp: 1850000000,
+            tokenType: 'Bearer',
+            email: 'arm64@example.com',
+          },
+          fingerprint: {
+            installationId: '1452f9a2-97c0-446c-900a-73053837e734',
+            machineId: 'auth0|user_627f607a0cc64c84adc32e9ff1544110',
+            osType: process.platform === 'darwin' ? 'windows' : 'darwin',
+            arch: process.arch === 'arm64' ? 'amd64' : 'arm64',
+            hubVersion: '2.25.0',
+            hostname:
+              process.platform === 'darwin' ? 'DESKTOP-D91FF9B' : 'MacBook-Pro-1234.local',
+          },
+        },
+      ],
+      { adaptToHostPlatform: true },
+    );
+
+    expect(imported).toHaveLength(1);
+    const prof = imported[0]!;
+    // Preserves device UUIDs while adapting OS/Arch/HubVersion & stripping foreign-OS workspacePath
+    expect(prof.fingerprint.installationId).toBe('1452f9a2-97c0-446c-900a-73053837e734');
+    expect(prof.fingerprint.machineId).toBe('auth0|user_627f607a0cc64c84adc32e9ff1544110');
+    expect(prof.fingerprint.hubVersion).toBe(OFFICIAL_HUB_VERSION);
+    expect(prof.workspacePath).toBeUndefined();
+    expect(prof.fingerprint.osType).toBe(
+      process.platform === 'win32'
+        ? 'windows'
+        : process.platform === 'darwin'
+          ? 'darwin'
+          : 'linux',
+    );
+    expect(prof.fingerprint.arch).toBe(process.arch === 'arm64' ? 'arm64' : 'amd64');
   });
 });

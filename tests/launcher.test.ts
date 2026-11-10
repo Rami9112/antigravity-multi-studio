@@ -219,4 +219,54 @@ setInterval(() => {}, 1000);
     await manager.stopAll();
     expect(manager.listRunningInstances()).toHaveLength(0);
   });
+
+  it('strips leaked parent Antigravity env vars and skips missing/foreign workspacePath on launch', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-multi-spec-'));
+    tempDirs.push(dir);
+    const existingWs = path.join(dir, 'my-workspace');
+    fs.mkdirSync(existingWs, { recursive: true });
+
+    const store = new ProfileStore(dir);
+    const manager = new InstanceManager(store);
+
+    const pMissingWs = store.createProfile({
+      name: 'Missing Workspace',
+      workspacePath: path.join(dir, 'does-not-exist-anywhere'),
+    });
+    const pExistingWs = store.createProfile({
+      name: 'Existing Workspace',
+      workspacePath: existingWs,
+    });
+
+    const prevAgent = process.env.ANTIGRAVITY_APP_DATA_DIR;
+    const prevAgy = process.env.AGY_BROWSER_WS_URL;
+    process.env.ANTIGRAVITY_APP_DATA_DIR = '/leaked/host/appdata';
+    process.env.AGY_BROWSER_WS_URL = 'ws://127.0.0.1:9999/leaked';
+
+    try {
+      const specMissing = manager.buildLaunchSpec(
+        pMissingWs,
+        store.getProfileUserDataDir(pMissingWs.id),
+        store.getProfileHomeDir(pMissingWs.id),
+        'http://127.0.0.1:55000',
+      );
+      expect(specMissing.args.some((a) => a.includes('does-not-exist-anywhere'))).toBe(false);
+      expect(specMissing.env.ANTIGRAVITY_APP_DATA_DIR).toBeUndefined();
+      expect(specMissing.env.AGY_BROWSER_WS_URL).toBeUndefined();
+      expect(specMissing.env.ANTIGRAVITY_PROFILE_ID).toBe(pMissingWs.id);
+
+      const specExisting = manager.buildLaunchSpec(
+        pExistingWs,
+        store.getProfileUserDataDir(pExistingWs.id),
+        store.getProfileHomeDir(pExistingWs.id),
+        'http://127.0.0.1:55001',
+      );
+      expect(specExisting.args).toContain(path.resolve(existingWs));
+    } finally {
+      if (prevAgent === undefined) delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+      else process.env.ANTIGRAVITY_APP_DATA_DIR = prevAgent;
+      if (prevAgy === undefined) delete process.env.AGY_BROWSER_WS_URL;
+      else process.env.AGY_BROWSER_WS_URL = prevAgy;
+    }
+  });
 });

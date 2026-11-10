@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import path from 'node:path';
 import { DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT } from './constants.js';
 import { ProfileStore } from './core/profile-store.js';
@@ -9,6 +10,7 @@ import { renderDashboardHtml } from './ui/dashboard.js';
 
 function parseCliArgs(argv: string[]) {
   let port = Number(process.env.PORT) || DEFAULT_SERVER_PORT;
+  let explicitPort = Boolean(process.env.PORT);
   let host = process.env.HOST || DEFAULT_SERVER_HOST;
   let dataDir = process.env.ANTI_MULTI_DATA_DIR || path.resolve(process.cwd(), 'data');
   let autoOpen = true;
@@ -17,9 +19,11 @@ function parseCliArgs(argv: string[]) {
     const arg = argv[i]!;
     if (arg === '--port' && argv[i + 1]) {
       port = Number(argv[i + 1]) || port;
+      explicitPort = true;
       i += 1;
     } else if (arg.startsWith('--port=')) {
       port = Number(arg.split('=')[1]) || port;
+      explicitPort = true;
     } else if (arg === '--host' && argv[i + 1]) {
       host = argv[i + 1]!;
       i += 1;
@@ -31,7 +35,40 @@ function parseCliArgs(argv: string[]) {
     }
   }
 
-  return { port, host, dataDir, autoOpen };
+  return { port, explicitPort, host, dataDir, autoOpen };
+}
+
+function probeExistingServer(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get(
+      {
+        hostname: host,
+        port,
+        path: '/api/state',
+        timeout: 1500,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+              ok?: boolean;
+              profiles?: unknown[];
+            };
+            resolve(res.statusCode === 200 && parsed.ok === true && Array.isArray(parsed.profiles));
+          } catch {
+            resolve(false);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
 }
 
 function openBrowserUrl(url: string): void {
@@ -56,19 +93,51 @@ function openBrowserUrl(url: string): void {
 }
 
 async function main(): Promise<void> {
-  const { port, host, dataDir, autoOpen } = parseCliArgs(process.argv.slice(2));
+  const { port, explicitPort, host, dataDir, autoOpen } = parseCliArgs(process.argv.slice(2));
 
   const store = new ProfileStore(dataDir);
   const instanceManager = new InstanceManager(store);
-  const server = new AppServer({
+  let activePort = port;
+  let server = new AppServer({
     store,
     instanceManager,
     host,
-    port,
+    port: activePort,
     renderDashboardHtml,
   });
 
-  const url = await server.start();
+  let url: string;
+  try {
+    url = await server.start();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'EADDRINUSE') {
+      const alreadyRunning = await probeExistingServer(host, activePort);
+      if (alreadyRunning) {
+        const existingUrl = `http://${host}:${activePort}`;
+        console.log(`[Anti-Multi] Server is already running at ${existingUrl}`);
+        if (autoOpen && process.env.NODE_ENV !== 'test') {
+          openBrowserUrl(existingUrl);
+        }
+        return;
+      }
+      if (!explicitPort) {
+        activePort = 0;
+        server = new AppServer({
+          store,
+          instanceManager,
+          host,
+          port: activePort,
+          renderDashboardHtml,
+        });
+        url = await server.start();
+      } else {
+        throw err;
+      }
+    } else {
+      throw err;
+    }
+  }
   console.log('==============================================================');
   console.log('  Anti-Multi Studio — Antigravity Multi-Account & Stealth Hub');
   console.log('==============================================================');

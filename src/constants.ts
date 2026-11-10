@@ -31,10 +31,10 @@ export const CLOUD_CODE_FALLBACK_ORIGINS = [
   'https://cloudcode-pa.googleapis.com',
 ];
 
-export const OFFICIAL_HUB_VERSION = '2.27.0';
+export const OFFICIAL_HUB_VERSION = '2.29.0';
 export const OFFICIAL_HUB_CL = '998881661';
 export const OFFICIAL_IDE_VERSION = '4.3.0';
-export const OFFICIAL_ELECTRON_VERSION = '39.2.3';
+export const OFFICIAL_ELECTRON_VERSION = '44.5.1';
 export const OFFICIAL_CHROME_VERSION = '132.0.6834.160';
 
 export const DEFAULT_SERVER_PORT = 4300;
@@ -64,8 +64,21 @@ export function getDefaultAntigravityExecutableCandidates(
     const programFilesX86 = env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
     const programW6432 = env.ProgramW6432;
 
-    const winFolders = ['antigravity', 'Antigravity', 'Antigravity IDE', 'antigravity-ide'];
-    const winExes = ['Antigravity.exe', 'antigravity.exe', 'Antigravity IDE.exe', 'antigravity-ide.exe'];
+    const winFolders = [
+      'antigravity',
+      'Antigravity',
+      'Antigravity IDE',
+      'antigravity-ide',
+      'Antigravity Insiders',
+      'antigravity-insiders',
+    ];
+    const winExes = [
+      'Antigravity.exe',
+      'antigravity.exe',
+      'Antigravity IDE.exe',
+      'antigravity-ide.exe',
+      'Antigravity Insiders.exe',
+    ];
 
     for (const folder of winFolders) {
       for (const exe of winExes) {
@@ -91,8 +104,8 @@ export function getDefaultAntigravityExecutableCandidates(
   }
 
   if (platform === 'darwin') {
-    const appNames = ['Antigravity.app', 'Antigravity IDE.app'];
-    const binaryNames = ['Antigravity', 'Electron', 'Antigravity IDE', 'antigravity'];
+    const appNames = ['Antigravity.app', 'Antigravity IDE.app', 'Antigravity Insiders.app'];
+    const binaryNames = ['Antigravity', 'Electron', 'Antigravity IDE', 'Antigravity Insiders', 'antigravity'];
     const appRoots = ['/Applications', path.posix.join(home, 'Applications')];
 
     for (const root of appRoots) {
@@ -148,24 +161,164 @@ export function getDefaultAntigravityExecutableCandidates(
 }
 
 /**
- * Resolves a single user-specified path if it exists on disk (including `.app` bundles on macOS
- * or parent installation directories on Windows/Linux). Returns `undefined` if not found on disk.
+ * Expands leading `~`, `$HOME`, or `%USERPROFILE%` against the real host home directory
+ * (never the isolated per-profile home directory).
+ */
+export function expandHomePath(
+  targetPath: string,
+  home = os.homedir(),
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const trimmed = targetPath.trim();
+  if (!trimmed) return '';
+
+  const sep = platform === 'win32' ? path.win32 : path.posix;
+
+  if (trimmed === '~') {
+    return home;
+  }
+  if (trimmed.startsWith('~/') || trimmed.startsWith('~\\')) {
+    return sep.join(home, trimmed.slice(2));
+  }
+  if (/^\$HOME(?:[\\/]|$)/.test(trimmed)) {
+    const rest = trimmed.slice('$HOME'.length).replace(/^[\\/]+/, '');
+    return rest ? sep.join(home, rest) : home;
+  }
+  if (/^\$\{HOME\}(?:[\\/]|$)/.test(trimmed)) {
+    const rest = trimmed.slice('${HOME}'.length).replace(/^[\\/]+/, '');
+    return rest ? sep.join(home, rest) : home;
+  }
+  if (/^%USERPROFILE%(?:[\\/]|$)/i.test(trimmed)) {
+    const rest = trimmed.replace(/^%USERPROFILE%[\\/]*/i, '');
+    return rest ? sep.join(home, rest) : home;
+  }
+  return trimmed;
+}
+
+/**
+ * Detects paths authored for a different OS family (e.g. `C:\projects\app` imported onto macOS,
+ * or `/Users/alice/app` imported onto Windows).
+ */
+export function isForeignOsPath(
+  targetPath?: string,
+  platform: NodeJS.Platform = process.platform,
+  home = os.homedir(),
+): boolean {
+  if (!targetPath) return false;
+  const trimmed = targetPath.trim();
+  if (!trimmed) return false;
+
+  if (platform === 'win32') {
+    if (
+      /^\/(?:Users|Applications|System|Library|home|opt|usr|var|snap|etc|private)(?:\/|$)/.test(
+        trimmed,
+      )
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  // POSIX (macOS / Linux): reject Windows drive paths (`C:\...`) or UNC paths (`\\server\...`),
+  // unless running in a Windows-hosted unit test where `home` itself is a Windows drive path.
+  const hostUsesDriveLetters = /^[A-Za-z]:[\\/]/.test(home);
+  if (!hostUsesDriveLetters && (/^[A-Za-z]:[\\/]/.test(trimmed) || /^\\\\[^\\]/.test(trimmed))) {
+    return true;
+  }
+  return false;
+}
+
+export interface WorkspacePathResolution {
+  configured?: string;
+  resolved?: string;
+  exists: boolean;
+  foreignOs: boolean;
+}
+
+/**
+ * Resolves a profile or launch `workspacePath` safely for the current host OS.
+ * Expands `~` against the real host home directory and verifies existence on disk so
+ * imported paths from another PC/OS (e.g. `C:\projects\personal` on macOS) never break launch.
+ */
+export function resolveLaunchWorkspacePath(
+  workspacePath?: string,
+  platform: NodeJS.Platform = process.platform,
+  home = os.homedir(),
+): WorkspacePathResolution {
+  const trimmed = workspacePath?.trim();
+  if (!trimmed) {
+    return { exists: false, foreignOs: false };
+  }
+
+  if (isForeignOsPath(trimmed, platform, home)) {
+    return { configured: trimmed, exists: false, foreignOs: true };
+  }
+
+  const expanded = expandHomePath(trimmed, home, platform);
+  try {
+    if (fs.existsSync(expanded)) {
+      return {
+        configured: trimmed,
+        resolved: path.resolve(expanded),
+        exists: true,
+        foreignOs: false,
+      };
+    }
+  } catch {
+    // ignore fs errors
+  }
+
+  return { configured: trimmed, exists: false, foreignOs: false };
+}
+
+function readMacosBundleExecutableName(bundleRoot: string): string | undefined {
+  const plistPath = path.join(bundleRoot, 'Contents', 'Info.plist');
+  if (!fs.existsSync(plistPath)) return undefined;
+  try {
+    const xml = fs.readFileSync(plistPath, 'utf8');
+    const match =
+      /<key>\s*CFBundleExecutable\s*<\/key>\s*<string>\s*([^<\r\n]+?)\s*<\/string>/i.exec(xml);
+    return match?.[1]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolves a single user-specified path if it exists on disk (including `.app` bundles on macOS,
+ * `~` home-relative paths, or parent installation directories on Windows/Linux).
+ * Returns `undefined` if incompatible with `platform` or not found on disk.
  */
 export function normalizeConfiguredExecutablePath(
   targetPath?: string,
   platform: NodeJS.Platform = process.platform,
+  home = os.homedir(),
 ): string | undefined {
   if (!targetPath) return undefined;
-  const trimmed = targetPath.trim();
-  if (!trimmed) return undefined;
+  const rawTrimmed = targetPath.trim();
+  if (!rawTrimmed) return undefined;
+
+  if (isForeignOsPath(rawTrimmed, platform, home)) {
+    return undefined;
+  }
+
+  const trimmed = expandHomePath(rawTrimmed, home, platform);
 
   // If user pointed inside a macOS .app bundle or to the .app directory itself
-  const appMatch = /^(.+?\.app)(?:\/.*)?$/i.exec(trimmed);
+  const appMatch = /^(.+\.app)(?:[\\/].*)?$/i.exec(trimmed);
   if (appMatch && (platform === 'darwin' || trimmed.toLowerCase().endsWith('.app'))) {
     const bundleRoot = appMatch[1]!;
     const macosDir = path.join(bundleRoot, 'Contents', 'MacOS');
-    const preferredBins = ['Antigravity', 'Electron', 'Antigravity IDE', 'antigravity'];
-    for (const bin of preferredBins) {
+    const plistExec = readMacosBundleExecutableName(bundleRoot);
+    const preferredBins = [
+      ...(plistExec ? [plistExec] : []),
+      'Antigravity',
+      'Electron',
+      'Antigravity IDE',
+      'Antigravity Insiders',
+      'antigravity',
+    ];
+    for (const bin of [...new Set(preferredBins)]) {
       const binPath = path.join(macosDir, bin);
       if (fs.existsSync(binPath) && isFileSafe(binPath)) {
         return binPath;
@@ -200,7 +353,12 @@ export function normalizeConfiguredExecutablePath(
     if (stat.isDirectory()) {
       const subCandidates =
         platform === 'win32'
-          ? ['Antigravity.exe', 'antigravity.exe', 'Antigravity IDE.exe']
+          ? [
+              'Antigravity.exe',
+              'antigravity.exe',
+              'Antigravity IDE.exe',
+              'Antigravity Insiders.exe',
+            ]
           : ['Antigravity', 'antigravity', 'Electron'];
       for (const sub of subCandidates) {
         const full = path.join(trimmed, sub);
@@ -230,14 +388,14 @@ export function resolveAntigravityExecutablePath(
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   if (configuredPath) {
-    const resolved = normalizeConfiguredExecutablePath(configuredPath, platform);
+    const resolved = normalizeConfiguredExecutablePath(configuredPath, platform, home);
     if (resolved) {
       return resolved;
     }
   }
 
   for (const candidate of getDefaultAntigravityExecutableCandidates(platform, home, env)) {
-    const resolved = normalizeConfiguredExecutablePath(candidate, platform);
+    const resolved = normalizeConfiguredExecutablePath(candidate, platform, home);
     if (resolved) {
       return resolved;
     }

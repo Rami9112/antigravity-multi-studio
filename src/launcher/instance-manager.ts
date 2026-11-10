@@ -1,7 +1,11 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { resolveAntigravityExecutablePath } from '../constants.js';
+import {
+  resolveAntigravityExecutablePath,
+  resolveLaunchWorkspacePath,
+} from '../constants.js';
 import {
   ensureFreshAccountToken,
   fetchGoogleUserInfo,
@@ -159,12 +163,55 @@ export class InstanceManager {
     args.push(...extraArgs);
 
     const targetWorkspace = workspacePath || profile.workspacePath;
-    if (targetWorkspace) {
-      args.push(targetWorkspace);
+    const resolvedWorkspace = resolveLaunchWorkspacePath(targetWorkspace);
+    if (resolvedWorkspace.exists && resolvedWorkspace.resolved) {
+      args.push(resolvedWorkspace.resolved);
+    }
+
+    const baseEnv: NodeJS.ProcessEnv = { ...process.env };
+    // Strip parent Antigravity / Electron / Jetski session variables so running Anti-Multi Studio
+    // inside an Antigravity terminal never leaks host paths or ports into isolated instances.
+    for (const key of Object.keys(baseEnv)) {
+      const upper = key.toUpperCase();
+      if (
+        upper.startsWith('ANTIGRAVITY_') ||
+        upper.startsWith('AGY_') ||
+        upper.startsWith('JETSKI_') ||
+        upper.startsWith('CODEIUM_') ||
+        upper === 'ELECTRON_RUN_AS_NODE' ||
+        upper === 'ELECTRON_OZONE_PLATFORM_HINT' ||
+        upper === 'DEV_URL'
+      ) {
+        delete baseEnv[key];
+      }
+    }
+
+    // Ensure macOS / Linux isolated instances retain host Homebrew & developer CLI tool PATHs
+    // even when HOME is redirected away from the host user's ~/.zprofile / ~/.zshrc.
+    if (process.platform !== 'win32') {
+      const realHome = os.homedir();
+      const extraPosixBins = [
+        '/opt/homebrew/bin',
+        '/opt/homebrew/sbin',
+        '/usr/local/bin',
+        path.posix.join(realHome, '.local', 'bin'),
+        path.posix.join(realHome, '.volta', 'bin'),
+        path.posix.join(realHome, '.bun', 'bin'),
+        path.posix.join(realHome, '.cargo', 'bin'),
+      ];
+      const existingParts = (baseEnv.PATH || '').split(':').filter(Boolean);
+      const existingSet = new Set(existingParts);
+      for (const binDir of extraPosixBins) {
+        if (!existingSet.has(binDir) && fs.existsSync(binDir)) {
+          existingParts.push(binDir);
+          existingSet.add(binDir);
+        }
+      }
+      baseEnv.PATH = existingParts.join(':');
     }
 
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
+      ...baseEnv,
       // Isolate os.homedir() / os.UserHomeDir() for Electron and language_server across Windows, macOS, and Linux
       USERPROFILE: profileHomeDir,
       HOME: profileHomeDir,
@@ -193,7 +240,6 @@ export class InstanceManager {
       env.HOMEPATH = winDriveMatch[2];
     }
 
-    delete env.ELECTRON_RUN_AS_NODE;
     // Clean AppImage environment variables on Linux so spawned instances do not inherit mount overrides
     for (const appImageVar of ['APPIMAGE', 'APPDIR', 'ARGV0', 'OWD', 'LD_PRELOAD']) {
       delete env[appImageVar];
@@ -299,11 +345,75 @@ export class InstanceManager {
       options.prependArgs,
     );
 
+    let spawnError: Error | null = null;
+    const stderrChunks: string[] = [];
+
     const child = spawn(exePath, args, {
       env,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
       detached: false,
       windowsHide: false,
+    });
+
+    child.on('error', (err) => {
+      spawnError = err;
+    });
+
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderrChunks.length < 24) {
+        stderrChunks.push(chunk.toString('utf8'));
+      }
+    });
+
+    // Wait briefly to catch immediate OS spawn errors (EACCES, EBADARCH on macOS, missing binary, etc.)
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanupStartupListeners();
+        resolve();
+      }, 150);
+
+      const onErr = (err: Error) => {
+        cleanupStartupListeners();
+        const macHint =
+          process.platform === 'darwin'
+            ? ' (macOS에서 차단된 경우 터미널에서 `xattr -cr "/Applications/Antigravity.app"` 실행을 확인하세요)'
+            : '';
+        reject(
+          new Error(
+            `Failed to launch Antigravity ("${exePath}"): ${err.message}${macHint}`,
+          ),
+        );
+      };
+
+      const onEarlyExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        cleanupStartupListeners();
+        if (code !== null && code !== 0) {
+          const detail = stderrChunks.join('').trim().slice(0, 300);
+          reject(
+            new Error(
+              `Antigravity exited immediately (code=${code}, signal=${signal ?? 'none'})${detail ? `: ${detail}` : ''}`,
+            ),
+          );
+          return;
+        }
+        resolve();
+      };
+
+      const cleanupStartupListeners = () => {
+        clearTimeout(timer);
+        child.removeListener('error', onErr);
+        child.removeListener('exit', onEarlyExit);
+      };
+
+      if (spawnError) {
+        onErr(spawnError);
+        return;
+      }
+      child.once('error', onErr);
+      child.once('exit', onEarlyExit);
+    }).catch(async (err) => {
+      await gateway.stop();
+      throw err;
     });
 
     if (!child.pid) {

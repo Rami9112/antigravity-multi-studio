@@ -462,6 +462,9 @@ export function renderDashboardHtml(): string {
   </header>
 
   <main class="container">
+    <div id="sandbox-warning-banner" style="display:none; margin-top:18px; padding:14px 18px; border-radius:12px; background:rgba(245,158,11,0.14); border:1px solid rgba(245,158,11,0.45); color:#fde68a; font-size:13px; line-height:1.55;">
+      <strong>⚠️ AI 에이전트 샌드박스 내부 실행 감지:</strong> 현재 Anti-Multi 서버가 Antigravity 에이전트 터미널 샌드박스 내부에서 실행되어, Windows 데스크톱 격리로 인해 여기서 실행한 Antigravity 창이 모니터에 표시되지 않습니다. 서버를 종료한 뒤 파일 탐색기에서 <code>start-windows.bat</code> (macOS는 <code>start-mac.command</code>) 또는 일반 터미널에서 직접 실행해주세요.
+    </div>
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-label">등록된 격리 프로필</div>
@@ -494,9 +497,10 @@ export function renderDashboardHtml(): string {
       </div>
     </div>
 
-    <div class="section-header">
+      <div class="section-header">
       <h2>🛡️ 계정 · 기기값(Fingerprint) · 프록시 프로필 매트릭스</h2>
-      <div style="display: flex; gap: 8px; align-items: center;">
+      <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <button class="btn-ghost btn-sm" onclick="alignAllProfilesToHost()">💻 전체 현재 기기(OS/Arch) 맞춤</button>
         <button class="btn-ghost btn-sm" onclick="toggleSelectAll(true)">전체 선택</button>
         <button class="btn-ghost btn-sm" onclick="toggleSelectAll(false)">선택 해제</button>
         <button class="btn-ghost btn-sm" onclick="refreshState()">🔄 상태 새로고침</button>
@@ -635,10 +639,15 @@ export function renderDashboardHtml(): string {
 
       <div class="form-group">
         <label>💾 전체 프로필 JSON 내보내기 / 가져오기</label>
-        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+        <div style="display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap;">
           <button class="btn-ghost btn-sm" onclick="exportProfilesJson()">⬇️ JSON 파일 다운로드</button>
+          <button class="btn-ghost btn-sm" onclick="alignAllProfilesToHost()">💻 등록된 프로필 전체 현재 기기 맞춤</button>
         </div>
         <textarea id="sm-import-json" rows="4" placeholder="가져올 프로필 JSON 배열 또는 백업 번들을 여기에 붙여넣으세요"></textarea>
+        <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-weight:500; color:var(--text-muted); cursor:pointer;">
+          <input type="checkbox" id="sm-import-adapt-host" checked />
+          <span>현재 실행 기기(macOS / Windows · ARM64 / x64)에 맞게 OS · 아키텍처 · 타 OS 경로 자동 보정 (기기 고유 UUID는 유지)</span>
+        </label>
       </div>
       <div style="display: flex; justify-content: space-between; gap: 8px;">
         <button class="btn-emerald btn-sm" onclick="importProfilesJson()">⬆️ JSON 프로필 가져오기</button>
@@ -699,6 +708,11 @@ export function renderDashboardHtml(): string {
       const profiles = appState.profiles || [];
       const running = appState.runningInstances || [];
       const runningByProfile = new Map(running.map(r => [r.profileId, r]));
+
+      const sandboxBanner = document.getElementById('sandbox-warning-banner');
+      if (sandboxBanner) {
+        sandboxBanner.style.display = appState.agentSandboxWarning ? 'block' : 'none';
+      }
 
       if (appState.hostPlatform) {
         const osLabel =
@@ -783,6 +797,13 @@ export function renderDashboardHtml(): string {
           ? \`\${p.proxy.lastCheckedIp} (\${p.proxy.lastCheckedCountry || '-'}, \${p.proxy.lastCheckedLatencyMs || 0}ms)\`
           : '미확인 (출구 IP 테스트 클릭)';
 
+        const hostOs = (appState.hostPlatform && appState.hostPlatform.osType) || '';
+        const hostArch = (appState.hostPlatform && appState.hostPlatform.arch) || '';
+        const hasPlatformDiff = Boolean(
+          hostOs && hostArch && (p.fingerprint.osType !== hostOs || p.fingerprint.arch !== hostArch)
+        );
+        const wsStatus = (appState.workspaceStatuses && appState.workspaceStatuses[p.id]) || null;
+
         const quotaItems = [
           ...((p.quota && p.quota.groups) || []),
           ...((p.quota && p.quota.models) || []).slice(0, 3),
@@ -849,7 +870,10 @@ export function renderDashboardHtml(): string {
             <div class="info-box">
               <div class="info-box-header">
                 <span>🧬 격리된 기기 식별값 (Device Fingerprint)</span>
-                <button class="btn-ghost btn-sm" onclick="regenerateFingerprint('\${p.id}')">🎲 기기값 재생성</button>
+                <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                  \${hasPlatformDiff ? \`<button class="btn-emerald btn-sm" title="기기 고유 UUID는 그대로 유지하고 OS/Arch만 현재 PC에 맞춥니다" onclick="alignProfileToHost('\${p.id}')">💻 현재 기기 맞춤</button>\` : ''}
+                  <button class="btn-ghost btn-sm" onclick="regenerateFingerprint('\${p.id}')">🎲 기기값 재생성</button>
+                </div>
               </div>
               <div class="kv-row">
                 <span class="kv-label">Installation ID (.gemini)</span>
@@ -861,8 +885,16 @@ export function renderDashboardHtml(): string {
               </div>
               <div class="kv-row">
                 <span class="kv-label">OS / Arch / Hostname</span>
-                <span class="kv-val">\${escapeHtml(p.fingerprint.osType)}/\${escapeHtml(p.fingerprint.arch)} · \${escapeHtml(p.fingerprint.hostname)}</span>
+                <span class="kv-val" style="\${hasPlatformDiff ? 'color:#fbbf24;' : ''}">\${escapeHtml(p.fingerprint.osType)}/\${escapeHtml(p.fingerprint.arch)} · \${escapeHtml(p.fingerprint.hostname)}</span>
               </div>
+              \${p.workspacePath ? \`
+                <div class="kv-row">
+                  <span class="kv-label">기본 워크스페이스</span>
+                  <span class="kv-val" style="color: \${wsStatus && wsStatus.exists ? '#e2e8f0' : '#fbbf24'};" title="\${escapeHtml(p.workspacePath)}">
+                    \${escapeHtml(p.workspacePath)}\${wsStatus && !wsStatus.exists ? ' (경로 없음·무시됨)' : ''}
+                  </span>
+                </div>
+              \` : ''}
             </div>
 
             <!-- Network / Proxy Box -->
@@ -1091,6 +1123,32 @@ export function renderDashboardHtml(): string {
       }
     }
 
+    async function alignProfileToHost(profileId) {
+      try {
+        await apiCall(\`/api/profiles/\${profileId}/align-host\`, {
+          method: 'POST',
+          body: '{}',
+        });
+        showToast('기기 고유 ID는 유지한 채 현재 PC 환경(OS / Arch)에 맞췄습니다!', '#10b981');
+        await refreshState();
+      } catch (err) {
+        showToast('현재 기기 맞춤 실패: ' + err.message, '#ef4444');
+      }
+    }
+
+    async function alignAllProfilesToHost() {
+      try {
+        const res = await apiCall('/api/profiles/align-all-host', {
+          method: 'POST',
+          body: '{}',
+        });
+        showToast(\`\${res.count}개 프로필을 현재 기기 환경(OS / Arch)에 맞췄습니다!\`, '#10b981');
+        await refreshState();
+      } catch (err) {
+        showToast('일괄 맞춤 실패: ' + err.message, '#ef4444');
+      }
+    }
+
     async function checkProfileIp(profileId) {
       try {
         showToast('프로필 출구 IP 및 프록시 연결을 테스트 중입니다...');
@@ -1237,9 +1295,11 @@ export function renderDashboardHtml(): string {
       try {
         const parsed = JSON.parse(raw);
         const profiles = Array.isArray(parsed) ? parsed : (parsed.profiles || []);
+        const adaptCheckbox = document.getElementById('sm-import-adapt-host');
+        const adaptToHostPlatform = adaptCheckbox ? Boolean(adaptCheckbox.checked) : true;
         const res = await apiCall('/api/import', {
           method: 'POST',
-          body: JSON.stringify({ profiles }),
+          body: JSON.stringify({ profiles, adaptToHostPlatform }),
         });
         showToast(\`\${res.count}개 프로필을 가져왔습니다!\`, '#10b981');
         closeModal('settings-modal');

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
+import { resolveLaunchWorkspacePath } from '../constants.js';
 import { detectLocalHostAntigravityAccount } from '../core/local-importer.js';
 import {
   buildGoogleOAuthUrl,
@@ -7,7 +8,7 @@ import {
   exchangeOAuthCode,
   refreshOAuthToken,
 } from '../core/oauth-service.js';
-import type { ProfileStore } from '../core/profile-store.js';
+import type { ImportProfileInput, ProfileStore } from '../core/profile-store.js';
 import { fetchAccountQuota } from '../core/quota-service.js';
 import { checkOutboundIp } from '../gateway/ip-checker.js';
 import type { InstanceManager } from '../launcher/instance-manager.js';
@@ -152,16 +153,28 @@ export class AppServer {
 
       // GET /api/state
       if (method === 'GET' && pathname === '/api/state') {
+        const profiles = this.store.listProfiles();
+        const workspaceStatuses: Record<
+          string,
+          ReturnType<typeof resolveLaunchWorkspacePath>
+        > = {};
+        for (const p of profiles) {
+          if (p.workspacePath) {
+            workspaceStatuses[p.id] = resolveLaunchWorkspacePath(p.workspacePath);
+          }
+        }
         sendJson(res, 200, {
           ok: true,
           serverUrl: this.url,
+          agentSandboxWarning: process.env.ANTIGRAVITY_AGENT === '1',
           hostPlatform: {
             osType: detectHostOsType(),
             arch: detectHostArch(),
             platform: process.platform,
           },
           settings: this.store.getSettings(),
-          profiles: this.store.listProfiles(),
+          profiles,
+          workspaceStatuses,
           runningInstances: this.instanceManager.listRunningInstances(),
         });
         return;
@@ -498,15 +511,34 @@ export class AppServer {
 
       if (method === 'POST' && pathname === '/api/import') {
         const body = await readJsonBody<
-          { profiles?: Array<Partial<AccountProfile>> } | Array<Partial<AccountProfile>>
+          | {
+              profiles?: ImportProfileInput[];
+              adaptToHostPlatform?: boolean;
+            }
+          | ImportProfileInput[]
         >(req);
         const list = Array.isArray(body)
           ? body
           : Array.isArray(body.profiles)
             ? body.profiles
             : [];
-        const imported = this.store.importProfiles(list);
+        const adaptToHostPlatform =
+          !Array.isArray(body) && Boolean(body.adaptToHostPlatform);
+        const imported = this.store.importProfiles(list, { adaptToHostPlatform });
         sendJson(res, 201, { ok: true, count: imported.length, profiles: imported });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/profiles/align-all-host') {
+        const updatedProfiles = this.store.alignAllProfilesToHost();
+        for (const p of updatedProfiles) {
+          this.instanceManager.notifyProfileUpdated(p.id);
+        }
+        sendJson(res, 200, {
+          ok: true,
+          count: updatedProfiles.length,
+          profiles: updatedProfiles,
+        });
         return;
       }
 
@@ -561,6 +593,13 @@ export class AppServer {
         if (action === 'regenerate-fingerprint' && method === 'POST') {
           const body = await readJsonBody<Partial<DeviceFingerprint>>(req);
           const updated = this.store.regenerateFingerprint(profileId, body);
+          this.instanceManager.notifyProfileUpdated(profileId);
+          sendJson(res, 200, { ok: true, profile: updated });
+          return;
+        }
+
+        if (action === 'align-host' && method === 'POST') {
+          const updated = this.store.alignProfileToHost(profileId);
           this.instanceManager.notifyProfileUpdated(profileId);
           sendJson(res, 200, { ok: true, profile: updated });
           return;

@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit --pretty false",
     "test": "vitest run",
-    "verify": "pnpm lint && pnpm typecheck && pnpm build && pnpm test"
+    "verify": "npm run lint && npm run typecheck && npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
